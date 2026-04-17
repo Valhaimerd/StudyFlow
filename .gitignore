@@ -1,0 +1,35 @@
+# OS and editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.tmp
+*.temp
+*.log
+
+# IDE metadata
+.idea/
+.vscode/
+*.iml
+
+# Python cache from local tooling/scripts
+__pycache__/
+*.pyc
+
+# Flutter and Dart generated files
+studyflow/.dart_tool/
+studyflow/.flutter-plugins-dependencies
+studyflow/.pub/
+studyflow/.pub-cache/
+studyflow/build/
+studyflow/coverage/
+studyflow/**/Flutter/.last_build_id
+
+# Platform build outputs
+studyflow/android/app/debug/
+studyflow/android/app/profile/
+studyflow/android/app/release/
+
+# Large local artifacts and sensitive local notes
+*.apk
+appID and certifications.txt
