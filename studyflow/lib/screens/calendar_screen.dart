@@ -253,6 +253,7 @@ class CalendarScreenState extends State<CalendarScreen> {
   List<CalendarEntry> _displayEntries = const [];
   List<CalendarEntry> _focusEntries = const [];
   List<CalendarEntry> _todayScheduleEntries = const [];
+  List<CalendarEntry> _completedEntries = const [];
   List<PlannerItem> _plannerItems = const [];
   Map<String, SubjectRecord> _manualSubjects = const {};
   Map<String, SubjectAppearance> _subjectAppearances = const {};
@@ -563,15 +564,17 @@ class CalendarScreenState extends State<CalendarScreen> {
   void _refreshAgendaEntries() {
     final datedEntries = _displayEntries.where((entry) {
       return entry.scheduledDate != null &&
-          _isSameDate(entry.scheduledDate!, _selectedDate) &&
-          !entry.isCompleted;
+          _isSameDate(entry.scheduledDate!, _selectedDate);
     }).toList()..sort((a, b) => a.scheduledDate!.compareTo(b.scheduledDate!));
 
     _focusEntries = datedEntries
-        .where((entry) => !entry.isScheduleEntry)
+        .where((entry) => !entry.isCompleted && !entry.isScheduleEntry)
         .toList();
     _todayScheduleEntries = datedEntries
-        .where((entry) => entry.isScheduleEntry)
+        .where((entry) => !entry.isCompleted && entry.isScheduleEntry)
+        .toList();
+    _completedEntries = datedEntries
+        .where((entry) => entry.isCompleted)
         .toList();
   }
 
@@ -678,6 +681,7 @@ class CalendarScreenState extends State<CalendarScreen> {
   Widget build(BuildContext context) {
     final focusEntries = _focusEntries;
     final todayScheduleEntries = _todayScheduleEntries;
+    final completedEntries = _completedEntries;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return RefreshIndicator(
@@ -759,6 +763,27 @@ class CalendarScreenState extends State<CalendarScreen> {
                 ),
               );
             }),
+          if (completedEntries.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            _SectionHeader(
+              title: 'Completed',
+              trailing: _formatSectionDate(_selectedDate),
+            ),
+            const SizedBox(height: 14),
+            ...completedEntries.map((entry) {
+              final tone = _entryToneFor(entry, isDark);
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 22),
+                child: _AgendaCard(
+                  entry: entry,
+                  tone: tone,
+                  badgeStyle: _badgeStyleForEntry(entry, tone),
+                  timeRange: _timeRange(entry),
+                  onTap: () => _openEntryDetails(entry),
+                ),
+              );
+            }),
+          ],
         ],
       ),
     );
@@ -959,7 +984,9 @@ class CalendarScreenState extends State<CalendarScreen> {
     }
 
     if (entry.isCompleted) {
-      return 'Completed in Classroom';
+      return entry.alternateLink == null
+          ? 'Completed in StudyFlow'
+          : 'Completed in Classroom';
     }
 
     final difference = scheduledDate.difference(now);
@@ -1319,10 +1346,19 @@ class _CalendarMonthCard extends StatelessWidget {
   }
 
   List<Color> _markersFor(DateTime date) {
-    final colors = entries
-        .where((entry) => entry.scheduledDate != null)
-        .where((entry) => !entry.isCompleted)
-        .where((entry) => _isSameDate(entry.scheduledDate!, date))
+    final datedEntries =
+        entries
+            .where((entry) => entry.scheduledDate != null)
+            .where((entry) => _isSameDate(entry.scheduledDate!, date))
+            .toList()
+          ..sort((a, b) {
+            if (a.isCompleted != b.isCompleted) {
+              return a.isCompleted ? 1 : -1;
+            }
+            return a.scheduledDate!.compareTo(b.scheduledDate!);
+          });
+
+    final colors = datedEntries
         .map((entry) {
           switch (entry.tone) {
             case CalendarEntryTone.critical:

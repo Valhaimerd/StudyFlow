@@ -3088,9 +3088,22 @@ class _ClassroomSubjectDetailsSheetState
     final filteredPendingEntries = _activeFilter == _ClassroomDetailFilter.all
         ? pendingEntries
         : pendingEntries.where(_isPastDue).toList();
-    final completedEntries = widget.subject.entries
-        .where((entry) => entry.isCompleted)
-        .toList();
+    final completedEntries =
+        widget.subject.entries.where((entry) => entry.isCompleted).toList()
+          ..sort((a, b) {
+            final aDate = a.scheduledDate;
+            final bDate = b.scheduledDate;
+            if (aDate != null && bDate != null) {
+              return bDate.compareTo(aDate);
+            }
+            if (aDate != null) {
+              return -1;
+            }
+            if (bDate != null) {
+              return 1;
+            }
+            return a.title.compareTo(b.title);
+          });
 
     return SafeArea(
       child: SingleChildScrollView(
@@ -3274,25 +3287,23 @@ class _ClassroomSubjectDetailsSheetState
                 style: Theme.of(context).textTheme.titleLarge,
               ),
               const SizedBox(height: 12),
-              ...completedEntries
-                  .take(4)
-                  .map(
-                    (entry) => Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: _ClassroomEntryTile(
-                        entry: entry,
-                        color: subject.color,
-                        iconKey: subject.iconKey,
-                        onOpen: () => widget.onOpenItem(
-                          entry,
-                          subject.color,
-                          subject.iconKey,
-                        ),
-                        onHide: () => widget.onHideEntry(entry),
-                        compact: true,
-                      ),
+              ...completedEntries.map(
+                (entry) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: _ClassroomEntryTile(
+                    entry: entry,
+                    color: subject.color,
+                    iconKey: subject.iconKey,
+                    onOpen: () => widget.onOpenItem(
+                      entry,
+                      subject.color,
+                      subject.iconKey,
                     ),
+                    onHide: () => widget.onHideEntry(entry),
+                    compact: true,
                   ),
+                ),
+              ),
             ],
           ],
         ),
