@@ -723,7 +723,9 @@ class NotificationService {
     if (normalized.contains('day')) {
       return Duration(days: amount);
     }
-    if (normalized.contains('hour') || normalized.contains(RegExp(r'\bh\b'))) {
+    if (normalized.contains('hour') ||
+        normalized.contains('hr') ||
+        normalized.contains(RegExp(r'\bh\b'))) {
       return Duration(hours: amount);
     }
     return Duration(minutes: amount);

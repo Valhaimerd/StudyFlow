@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:studyflow/models/reminder_presets.dart';
 import 'package:studyflow/services/app_settings_service.dart';
 
 void main() {
@@ -22,5 +23,6 @@ void main() {
     expect(settings.lectureVibrationOnly, isTrue);
     expect(settings.studyGoalAlertsEnabled, isFalse);
     expect(settings.autoSyncEnabled, isTrue);
+    expect(settings.taskReminderDefault, defaultTaskReminderLabel);
   });
 }

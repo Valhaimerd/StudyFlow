@@ -58,16 +58,20 @@ void main() {
 
   test('notification reminder labels convert to schedule offsets', () {
     expect(
-      NotificationService.parseReminderOffset('15m before'),
-      const Duration(minutes: 15),
+      NotificationService.parseReminderOffset('10m before'),
+      const Duration(minutes: 10),
     );
     expect(
-      NotificationService.parseReminderOffset('1 hour before'),
+      NotificationService.parseReminderOffset('1hr before'),
       const Duration(hours: 1),
     );
     expect(
-      NotificationService.parseReminderOffset('1 week before'),
-      const Duration(days: 7),
+      NotificationService.parseReminderOffset('12hr before'),
+      const Duration(hours: 12),
+    );
+    expect(
+      NotificationService.parseReminderOffset('3 day before'),
+      const Duration(days: 3),
     );
   });
 

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/reminder_presets.dart';
+
 enum SyncStatus { stable, syncing, pendingChanges, failed, offlineLocalOnly }
 
 enum ReminderCategory { tasks, exams, lectures }
@@ -183,7 +185,8 @@ class AppSettingsService {
       lectureVibrationOnly: prefs.getBool(_lectureVibrationOnlyKey) ?? true,
       studyGoalAlertsEnabled: prefs.getBool(_studyGoalAlertsKey) ?? false,
       autoSyncEnabled: prefs.getBool(_autoSyncEnabledKey) ?? true,
-      taskReminderDefault: prefs.getString(_taskReminderKey) ?? '15m before',
+      taskReminderDefault:
+          prefs.getString(_taskReminderKey) ?? defaultTaskReminderLabel,
       examReminderDefault: prefs.getString(_examReminderKey) ?? '2 days before',
       lectureReminderDefault:
           prefs.getString(_lectureReminderKey) ?? '10m before',

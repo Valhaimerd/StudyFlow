@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../app_controller.dart';
 import '../models/planner_item.dart';
+import '../models/reminder_presets.dart';
 import '../models/subject_record.dart';
 import '../widgets/modal_sheet_header.dart';
 
@@ -871,10 +872,11 @@ class _PlannerItemEditorSheetState extends State<PlannerItemEditorSheet> {
   }
 
   List<String> get _reminderOptionsForSelectedValue {
-    if (_reminderOptions.contains(_reminderLabel)) {
-      return _reminderOptions;
+    final options = _reminderOptionsForType(_selectedType);
+    if (options.contains(_reminderLabel)) {
+      return options;
     }
-    return [_reminderLabel, ..._reminderOptions];
+    return [_reminderLabel, ...options];
   }
 
   void _initializeSubjectSelection(PlannerItem? initial) {
@@ -910,6 +912,18 @@ class _PlannerItemEditorSheetState extends State<PlannerItemEditorSheet> {
         return widget.controller.examReminderDefault;
       case PlannerItemType.schedule:
         return widget.controller.lectureReminderDefault;
+    }
+  }
+
+  List<String> _reminderOptionsForType(PlannerItemType type) {
+    switch (type) {
+      case PlannerItemType.task:
+      case PlannerItemType.project:
+        return taskReminderOptions;
+      case PlannerItemType.exam:
+        return examReminderOptions;
+      case PlannerItemType.schedule:
+        return lectureReminderOptions;
     }
   }
 
@@ -1374,15 +1388,6 @@ class _EditableSubtaskDraft {
   final bool isCompleted;
   final DateTime? completedAt;
 }
-
-const List<String> _reminderOptions = [
-  '10m before',
-  '15m before',
-  '30m before',
-  '1h before',
-  '1 day before',
-  '2 days before',
-];
 
 String _normalizedSubjectKey(String value) {
   return value.trim().toLowerCase().replaceAll(RegExp(r'\s+'), '-');

@@ -4,6 +4,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import '../app_controller.dart';
+import '../models/reminder_presets.dart';
 import '../services/app_settings_service.dart';
 import '../services/auth_service.dart';
 import '../services/database_service.dart';
@@ -120,24 +121,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   late Future<PackageInfo> _packageInfoFuture;
 
   static const Map<ReminderCategory, List<String>> _reminderOptions = {
-    ReminderCategory.tasks: [
-      '10m before',
-      '15m before',
-      '30m before',
-      '1 hour before',
-    ],
-    ReminderCategory.exams: [
-      '1 day before',
-      '2 days before',
-      '3 days before',
-      '1 week before',
-    ],
-    ReminderCategory.lectures: [
-      '5m before',
-      '10m before',
-      '15m before',
-      '30m before',
-    ],
+    ReminderCategory.tasks: taskReminderOptions,
+    ReminderCategory.exams: examReminderOptions,
+    ReminderCategory.lectures: lectureReminderOptions,
   };
 
   @override
