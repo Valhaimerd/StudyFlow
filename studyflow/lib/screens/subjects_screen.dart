@@ -8,11 +8,13 @@ import 'package:url_launcher/url_launcher.dart';
 import '../app_controller.dart';
 import '../models/calendar_cache_snapshot.dart';
 import '../models/calendar_entry.dart';
+import '../models/classroom_stream_item.dart';
 import '../models/planner_item.dart';
 import '../models/subject_appearance.dart';
 import '../models/subject_record.dart';
 import '../services/auth_service.dart';
 import '../services/calendar_repository.dart';
+import '../services/classroom_subject_identity.dart';
 import '../services/database_service.dart';
 import '../services/notification_service.dart';
 import '../widgets/modal_sheet_header.dart';
@@ -88,6 +90,41 @@ String _formatSyncLabel(DateTime? value) {
   }
 
   return 'Updated ${_formatLongDate(value)}';
+}
+
+String _classroomStreamItemDateLabel(ClassroomStreamItem item) {
+  final value = item.updatedAt ?? item.scheduledAt;
+  if (value == null) {
+    return 'No update time';
+  }
+
+  final now = DateTime.now();
+  final isToday =
+      value.year == now.year &&
+      value.month == now.month &&
+      value.day == now.day;
+  if (isToday) {
+    return 'Updated today at ${_formatShortTime(value)}';
+  }
+
+  return 'Updated ${_formatLongDate(value)}';
+}
+
+Future<void> _launchExternalLink(BuildContext context, String url) async {
+  final uri = Uri.tryParse(url);
+  if (uri == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('The attachment link is invalid.')),
+    );
+    return;
+  }
+
+  final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+  if (!launched && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Could not open the attachment.')),
+    );
+  }
 }
 
 String _deadlineLabel(DateTime? value) {
@@ -339,35 +376,83 @@ class SubjectsScreenState extends State<SubjectsScreen> {
     required bool hiddenOnly,
   }) {
     final entries = _classroomSnapshot?.entries ?? const <CalendarEntry>[];
-    if (entries.isEmpty) {
+    final resourceItems =
+        _classroomSnapshot?.streamItems
+            .where((item) => item.isResource)
+            .toList() ??
+        const <ClassroomStreamItem>[];
+    if (entries.isEmpty && resourceItems.isEmpty) {
       return const <_ClassroomSubjectSummary>[];
     }
 
-    final grouped = <String, List<CalendarEntry>>{};
+    final grouped = <String, _ClassroomSubjectGroup>{};
     for (final entry in entries) {
       if (_hiddenClassroomEntryIds.contains(entry.id)) {
         continue;
       }
-      final key = _classroomSubjectStorageKey(entry);
+      final key = classroomSubjectStorageKeyForEntry(entry);
       final isHidden = _hiddenClassroomSubjectKeys.contains(key);
       if (hiddenOnly != isHidden) {
         continue;
       }
-      grouped.putIfAbsent(key, () => <CalendarEntry>[]).add(entry);
+      grouped
+          .putIfAbsent(
+            key,
+            () => _ClassroomSubjectGroup(
+              key: key,
+              name: entry.subject.trim().isEmpty ? 'Classroom' : entry.subject,
+            ),
+          )
+          .taskEntries
+          .add(entry);
+    }
+
+    for (final item in resourceItems) {
+      if (_hiddenClassroomEntryIds.contains(item.id)) {
+        continue;
+      }
+      final key = classroomSubjectStorageKeyForStreamItem(item);
+      final isHidden = _hiddenClassroomSubjectKeys.contains(key);
+      if (hiddenOnly != isHidden) {
+        continue;
+      }
+      grouped
+          .putIfAbsent(
+            key,
+            () => _ClassroomSubjectGroup(
+              key: key,
+              name: item.courseName.trim().isEmpty
+                  ? 'Classroom'
+                  : item.courseName,
+            ),
+          )
+          .resourceItems
+          .add(item);
     }
 
     final subjects =
         grouped.entries.map((group) {
-          final firstEntry = group.value.first;
-          final appearance = _appearanceForEntry(firstEntry);
-          final name = firstEntry.subject.trim().isEmpty
-              ? 'Classroom'
-              : firstEntry.subject;
+          final firstTask = group.value.taskEntries.firstOrNull;
+          final appearanceEntry =
+              firstTask ??
+              CalendarEntry(
+                id: group.value.key,
+                subject: group.value.name,
+                title: group.value.name,
+                description: group.value.name,
+                type: CalendarEntryType.task,
+                tone: CalendarEntryTone.openEnded,
+                subjectKey: group.value.key,
+                subjectSource: CalendarSubjectSource.classroom,
+              );
+          final appearance = _appearanceForEntry(appearanceEntry);
+          final name = group.value.name;
 
           return _ClassroomSubjectSummary(
             key: group.key,
             name: name,
-            entries: group.value,
+            taskEntries: group.value.taskEntries,
+            resourceItems: group.value.resourceItems,
             color: appearance == null
                 ? _deterministicClassroomColor(name)
                 : Color(appearance.colorValue),
@@ -473,7 +558,9 @@ class SubjectsScreenState extends State<SubjectsScreen> {
     return PlannerItem(
       id: 'classroom::${entry.id}',
       title: entry.title,
-      subjectId: 'classroom::${entry.subjectKey ?? subjectName}',
+      subjectId: classroomPlannerSubjectId(
+        classroomSubjectStorageKeyForEntry(entry),
+      ),
       subjectName: subjectName,
       sourceItemId: entry.id,
       type: PlannerItemType.task,
@@ -520,22 +607,12 @@ class SubjectsScreenState extends State<SubjectsScreen> {
     return key == null ? null : _subjectAppearances[key];
   }
 
-  String _classroomSubjectStorageKey(CalendarEntry entry) {
-    final subjectKey = entry.subjectKey?.trim();
-    if (subjectKey != null && subjectKey.isNotEmpty) {
-      return subjectKey;
-    }
-
-    final subjectName = entry.subject.trim();
-    return subjectName.isEmpty ? 'classroom' : subjectName;
-  }
-
   String? _appearanceStorageKeyForEntry(CalendarEntry entry) {
     if (entry.subjectSource != CalendarSubjectSource.classroom) {
       return null;
     }
 
-    return '${CalendarSubjectSource.classroom.name}::${_classroomSubjectStorageKey(entry)}';
+    return '${CalendarSubjectSource.classroom.name}::${classroomSubjectStorageKeyForEntry(entry)}';
   }
 
   @override
@@ -1104,9 +1181,16 @@ class SubjectsScreenState extends State<SubjectsScreen> {
       builder: (context) => _ClassroomSubjectDetailsSheet(
         subject: subject,
         showPastDueOnly: showPastDueOnly,
-        onOpenItem: (entry, color, iconKey) async {
+        onOpenTask: (entry, color, iconKey) async {
           await _openClassroomEntryDetails(
             entry,
+            color: color,
+            iconKey: iconKey,
+          );
+        },
+        onOpenResource: (item, color, iconKey) async {
+          await _openClassroomStreamItemDetails(
+            item,
             color: color,
             iconKey: iconKey,
           );
@@ -1119,8 +1203,11 @@ class SubjectsScreenState extends State<SubjectsScreen> {
           Navigator.of(context).pop();
           await _hideClassroomSubject(subject);
         },
-        onHideEntry: (entry) async {
+        onHideTask: (entry) async {
           await _hideClassroomEntry(entry);
+        },
+        onHideResource: (item) async {
+          await _hideClassroomStreamItem(item);
         },
       ),
     );
@@ -1145,6 +1232,25 @@ class SubjectsScreenState extends State<SubjectsScreen> {
           _openPlannerEditor(classroomEntry: entry);
         },
         onOpenInClassroom: () => _launchClassroomLink(entry.alternateLink),
+      ),
+    );
+  }
+
+  Future<void> _openClassroomStreamItemDetails(
+    ClassroomStreamItem item, {
+    required Color color,
+    required String iconKey,
+  }) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).cardColor,
+      showDragHandle: true,
+      builder: (context) => _ClassroomStreamItemDetailsSheet(
+        item: item,
+        color: color,
+        iconKey: iconKey,
+        onOpenInClassroom: () => _launchClassroomLink(item.alternateLink),
       ),
     );
   }
@@ -1313,6 +1419,21 @@ class SubjectsScreenState extends State<SubjectsScreen> {
     _showMessage('${entry.title} hidden.');
   }
 
+  Future<void> _hideClassroomStreamItem(ClassroomStreamItem item) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+
+    await DatabaseService.instance.hideClassroomEntry(
+      uid: user.uid,
+      entryId: item.id,
+    );
+
+    if (!mounted) return;
+    _showMessage('${item.title} hidden.');
+  }
+
   Future<void> _hidePlannerItem(PlannerItem item) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
@@ -1374,6 +1495,9 @@ class SubjectsScreenState extends State<SubjectsScreen> {
         scheduleSlots: draft.scheduleSlots,
         autoCompleteFromSubtasks: draft.autoCompleteFromSubtasks,
         subtasks: draft.subtasks,
+        linkedClassroomContent:
+            sourceItem?.linkedClassroomContent ??
+            const <PlannerLinkedClassroomContentRef>[],
         completedAt: sourceItem?.completedAt,
         createdAt: sourceItem?.createdAt,
         updatedAt: sourceItem?.updatedAt,
@@ -2450,7 +2574,7 @@ class _ClassroomSubjectCard extends StatelessWidget {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          '${subject.pendingCount} pending • ${subject.completedCount} completed',
+                          subject.statusSummary,
                           style: Theme.of(context).textTheme.bodyMedium,
                         ),
                       ],
@@ -3031,23 +3155,34 @@ class _ManualPlannerItemDetailsSheet extends StatelessWidget {
 
 enum _ClassroomDetailFilter { all, pastDue }
 
+enum _ClassroomDetailSection { tasks, resources }
+
 class _ClassroomSubjectDetailsSheet extends StatefulWidget {
   const _ClassroomSubjectDetailsSheet({
     required this.subject,
     required this.showPastDueOnly,
-    required this.onOpenItem,
+    required this.onOpenTask,
+    required this.onOpenResource,
     required this.onEditAppearance,
     required this.onHideSubject,
-    required this.onHideEntry,
+    required this.onHideTask,
+    required this.onHideResource,
   });
 
   final _ClassroomSubjectSummary subject;
   final bool showPastDueOnly;
   final Future<void> Function(CalendarEntry entry, Color color, String iconKey)
-  onOpenItem;
+  onOpenTask;
+  final Future<void> Function(
+    ClassroomStreamItem item,
+    Color color,
+    String iconKey,
+  )
+  onOpenResource;
   final Future<void> Function() onEditAppearance;
   final Future<void> Function() onHideSubject;
-  final ValueChanged<CalendarEntry> onHideEntry;
+  final ValueChanged<CalendarEntry> onHideTask;
+  final ValueChanged<ClassroomStreamItem> onHideResource;
 
   @override
   State<_ClassroomSubjectDetailsSheet> createState() =>
@@ -3057,6 +3192,7 @@ class _ClassroomSubjectDetailsSheet extends StatefulWidget {
 class _ClassroomSubjectDetailsSheetState
     extends State<_ClassroomSubjectDetailsSheet> {
   late _ClassroomDetailFilter _activeFilter;
+  late _ClassroomDetailSection _activeSection;
 
   @override
   void initState() {
@@ -3064,13 +3200,18 @@ class _ClassroomSubjectDetailsSheetState
     _activeFilter = widget.showPastDueOnly
         ? _ClassroomDetailFilter.pastDue
         : _ClassroomDetailFilter.all;
+    _activeSection =
+        widget.subject.taskEntries.isEmpty &&
+            widget.subject.resourceItems.isNotEmpty
+        ? _ClassroomDetailSection.resources
+        : _ClassroomDetailSection.tasks;
   }
 
   @override
   Widget build(BuildContext context) {
     final subject = widget.subject;
     final pendingEntries =
-        widget.subject.entries.where((entry) => !entry.isCompleted).toList()
+        widget.subject.taskEntries.where((entry) => !entry.isCompleted).toList()
           ..sort((a, b) {
             final aDate = a.scheduledDate;
             final bDate = b.scheduledDate;
@@ -3089,7 +3230,7 @@ class _ClassroomSubjectDetailsSheetState
         ? pendingEntries
         : pendingEntries.where(_isPastDue).toList();
     final completedEntries =
-        widget.subject.entries.where((entry) => entry.isCompleted).toList()
+        widget.subject.taskEntries.where((entry) => entry.isCompleted).toList()
           ..sort((a, b) {
             final aDate = a.scheduledDate;
             final bDate = b.scheduledDate;
@@ -3104,6 +3245,22 @@ class _ClassroomSubjectDetailsSheetState
             }
             return a.title.compareTo(b.title);
           });
+    final resourceItems = widget.subject.resourceItems.toList()
+      ..sort((a, b) {
+        final aDate = a.updatedAt ?? a.scheduledAt;
+        final bDate = b.updatedAt ?? b.scheduledAt;
+        if (aDate != null && bDate != null) {
+          final compare = bDate.compareTo(aDate);
+          if (compare != 0) {
+            return compare;
+          }
+        } else if (aDate != null) {
+          return -1;
+        } else if (bDate != null) {
+          return 1;
+        }
+        return a.title.toLowerCase().compareTo(b.title.toLowerCase());
+      });
 
     return SafeArea(
       child: SingleChildScrollView(
@@ -3118,8 +3275,7 @@ class _ClassroomSubjectDetailsSheetState
           children: [
             ModalSheetHeader(
               title: widget.subject.name,
-              subtitle:
-                  '${subject.pendingCount} pending • ${subject.completedCount} completed',
+              subtitle: subject.statusSummary,
             ),
             const SizedBox(height: 12),
             Row(
@@ -3148,7 +3304,7 @@ class _ClassroomSubjectDetailsSheetState
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        '${subject.pendingCount} pending • ${subject.completedCount} completed',
+                        subject.statusSummary,
                         style: Theme.of(context).textTheme.bodyLarge,
                       ),
                     ],
@@ -3226,84 +3382,144 @@ class _ClassroomSubjectDetailsSheetState
               ),
             ),
             const SizedBox(height: 22),
-            Text('Pending work', style: Theme.of(context).textTheme.titleLarge),
-            if (subject.overdueCount > 0) ...[
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  _SmallToggleChip(
-                    label: 'All',
-                    isSelected: _activeFilter == _ClassroomDetailFilter.all,
-                    onTap: () {
-                      setState(() {
-                        _activeFilter = _ClassroomDetailFilter.all;
-                      });
-                    },
-                  ),
-                  const SizedBox(width: 10),
-                  _SmallToggleChip(
-                    label: 'Past Due',
-                    isSelected: _activeFilter == _ClassroomDetailFilter.pastDue,
-                    onTap: () {
-                      setState(() {
-                        _activeFilter = _ClassroomDetailFilter.pastDue;
-                      });
-                    },
-                  ),
-                ],
+            Row(
+              children: [
+                _SmallToggleChip(
+                  label: 'Tasks (${subject.taskEntries.length})',
+                  isSelected: _activeSection == _ClassroomDetailSection.tasks,
+                  onTap: () {
+                    setState(() {
+                      _activeSection = _ClassroomDetailSection.tasks;
+                    });
+                  },
+                ),
+                const SizedBox(width: 10),
+                _SmallToggleChip(
+                  label: 'Materials & Announcements (${subject.resourceCount})',
+                  isSelected:
+                      _activeSection == _ClassroomDetailSection.resources,
+                  onTap: () {
+                    setState(() {
+                      _activeSection = _ClassroomDetailSection.resources;
+                    });
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 18),
+            if (_activeSection == _ClassroomDetailSection.tasks) ...[
+              Text(
+                'Pending work',
+                style: Theme.of(context).textTheme.titleLarge,
               ),
-            ],
-            const SizedBox(height: 12),
-            if (filteredPendingEntries.isEmpty)
-              _SimpleEmptyCard(
-                title: _activeFilter == _ClassroomDetailFilter.pastDue
-                    ? 'No past due work'
-                    : 'All caught up',
-                subtitle: _activeFilter == _ClassroomDetailFilter.pastDue
-                    ? 'Everything remaining for this Classroom subject is still on time.'
-                    : 'This Classroom subject does not have any pending work right now.',
-              )
-            else
-              ...filteredPendingEntries.map(
-                (entry) => Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: _ClassroomEntryTile(
-                    entry: entry,
-                    color: subject.color,
-                    iconKey: subject.iconKey,
-                    onOpen: () => widget.onOpenItem(
-                      entry,
-                      subject.color,
-                      subject.iconKey,
+              if (subject.overdueCount > 0) ...[
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    _SmallToggleChip(
+                      label: 'All',
+                      isSelected: _activeFilter == _ClassroomDetailFilter.all,
+                      onTap: () {
+                        setState(() {
+                          _activeFilter = _ClassroomDetailFilter.all;
+                        });
+                      },
                     ),
-                    onHide: () => widget.onHideEntry(entry),
+                    const SizedBox(width: 10),
+                    _SmallToggleChip(
+                      label: 'Past Due',
+                      isSelected:
+                          _activeFilter == _ClassroomDetailFilter.pastDue,
+                      onTap: () {
+                        setState(() {
+                          _activeFilter = _ClassroomDetailFilter.pastDue;
+                        });
+                      },
+                    ),
+                  ],
+                ),
+              ],
+              const SizedBox(height: 12),
+              if (filteredPendingEntries.isEmpty)
+                _SimpleEmptyCard(
+                  title: _activeFilter == _ClassroomDetailFilter.pastDue
+                      ? 'No past due work'
+                      : 'All caught up',
+                  subtitle: _activeFilter == _ClassroomDetailFilter.pastDue
+                      ? 'Everything remaining for this Classroom subject is still on time.'
+                      : 'This Classroom subject does not have any pending work right now.',
+                )
+              else
+                ...filteredPendingEntries.map(
+                  (entry) => Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: _ClassroomEntryTile(
+                      entry: entry,
+                      color: subject.color,
+                      iconKey: subject.iconKey,
+                      onOpen: () => widget.onOpenTask(
+                        entry,
+                        subject.color,
+                        subject.iconKey,
+                      ),
+                      onHide: () => widget.onHideTask(entry),
+                    ),
                   ),
                 ),
-              ),
-            if (completedEntries.isNotEmpty) ...[
-              const SizedBox(height: 22),
+              if (completedEntries.isNotEmpty) ...[
+                const SizedBox(height: 22),
+                Text(
+                  'Completed in Classroom',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 12),
+                ...completedEntries.map(
+                  (entry) => Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: _ClassroomEntryTile(
+                      entry: entry,
+                      color: subject.color,
+                      iconKey: subject.iconKey,
+                      onOpen: () => widget.onOpenTask(
+                        entry,
+                        subject.color,
+                        subject.iconKey,
+                      ),
+                      onHide: () => widget.onHideTask(entry),
+                      compact: true,
+                    ),
+                  ),
+                ),
+              ],
+            ] else ...[
               Text(
-                'Completed in Classroom',
+                'Materials & Announcements',
                 style: Theme.of(context).textTheme.titleLarge,
               ),
               const SizedBox(height: 12),
-              ...completedEntries.map(
-                (entry) => Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: _ClassroomEntryTile(
-                    entry: entry,
-                    color: subject.color,
-                    iconKey: subject.iconKey,
-                    onOpen: () => widget.onOpenItem(
-                      entry,
-                      subject.color,
-                      subject.iconKey,
+              if (resourceItems.isEmpty)
+                const _SimpleEmptyCard(
+                  title: 'No materials yet',
+                  subtitle:
+                      'Announcements and class materials from this Classroom subject will appear here after sync.',
+                )
+              else
+                ...resourceItems.map(
+                  (item) => Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: _ClassroomStreamItemTile(
+                      item: item,
+                      color: subject.color,
+                      iconKey: subject.iconKey,
+                      onOpen: () => widget.onOpenResource(
+                        item,
+                        subject.color,
+                        subject.iconKey,
+                      ),
+                      onHide: () => widget.onHideResource(item),
                     ),
-                    onHide: () => widget.onHideEntry(entry),
-                    compact: true,
                   ),
                 ),
-              ),
             ],
           ],
         ),
@@ -3509,6 +3725,231 @@ class _ClassroomEntryDetailsSheet extends StatelessWidget {
   }
 }
 
+class _ClassroomStreamItemTile extends StatelessWidget {
+  const _ClassroomStreamItemTile({
+    required this.item,
+    required this.color,
+    required this.iconKey,
+    required this.onOpen,
+    required this.onHide,
+  });
+
+  final ClassroomStreamItem item;
+  final Color color;
+  final String iconKey;
+  final VoidCallback onOpen;
+  final VoidCallback onHide;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onOpen,
+        borderRadius: BorderRadius.circular(22),
+        child: Ink(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: _surfaceTint(color, 0.12),
+            borderRadius: BorderRadius.circular(22),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Icon(_iconForKey(iconKey), color: _foregroundFor(color)),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _TypeChip(
+                      label: item.typeLabel.toUpperCase(),
+                      backgroundColor: Colors.white.withValues(alpha: 0.72),
+                      foregroundColor: color,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      item.title,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      item.description,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _classroomStreamItemDateLabel(item),
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: color,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              TextButton(onPressed: onHide, child: const Text('Hide')),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ClassroomStreamItemDetailsSheet extends StatelessWidget {
+  const _ClassroomStreamItemDetailsSheet({
+    required this.item,
+    required this.color,
+    required this.iconKey,
+    required this.onOpenInClassroom,
+  });
+
+  final ClassroomStreamItem item;
+  final Color color;
+  final String iconKey;
+  final VoidCallback onOpenInClassroom;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: EdgeInsets.fromLTRB(
+          20,
+          8,
+          20,
+          28 + MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ModalSheetHeader(title: item.title, subtitle: item.typeLabel),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: color,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Icon(
+                    _iconForKey(iconKey),
+                    color: _foregroundFor(color),
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        item.title,
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${item.courseName} | ${item.typeLabel}',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 18),
+            _InfoRow(label: 'Type', value: item.typeLabel),
+            _InfoRow(
+              label: 'Updated',
+              value: _classroomStreamItemDateLabel(item),
+            ),
+            if (item.attachments.isNotEmpty)
+              _InfoRow(
+                label: 'Attachments',
+                value:
+                    '${item.attachments.length} linked resource${item.attachments.length == 1 ? '' : 's'}',
+              ),
+            const SizedBox(height: 14),
+            Text('Details', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 6),
+            Text(
+              item.description.trim().isEmpty
+                  ? 'No additional details.'
+                  : item.description,
+              style: Theme.of(context).textTheme.bodyLarge,
+            ),
+            if (item.attachments.isNotEmpty) ...[
+              const SizedBox(height: 18),
+              Text(
+                'Attachments',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 10),
+              ...item.attachments.map(
+                (attachment) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: _surfaceTint(color, 0.10),
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                attachment.title,
+                                style: Theme.of(context).textTheme.titleSmall,
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                attachment.typeLabel,
+                                style: Theme.of(context).textTheme.bodyMedium,
+                              ),
+                            ],
+                          ),
+                        ),
+                        if ((attachment.url ?? '').isNotEmpty)
+                          IconButton(
+                            onPressed: () =>
+                                _launchExternalLink(context, attachment.url!),
+                            icon: const Icon(Icons.open_in_new_rounded),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.tonal(
+                onPressed: onOpenInClassroom,
+                child: const Text('Open in Classroom'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _SimpleEmptyCard extends StatelessWidget {
   const _SimpleEmptyCard({required this.title, required this.subtitle});
 
@@ -3593,10 +4034,13 @@ class _SubjectSearchSheetState extends State<_SubjectSearchSheet> {
         subject.name,
         subject.code,
         subject.iconKey,
-        ...subject.entries.map((entry) => entry.title),
-        ...subject.entries.map((entry) => entry.description),
-        ...subject.entries.map((entry) => entry.typeLabel),
-        ...subject.entries.map((entry) => entry.badgeLabel ?? ''),
+        ...subject.taskEntries.map((entry) => entry.title),
+        ...subject.taskEntries.map((entry) => entry.description),
+        ...subject.taskEntries.map((entry) => entry.typeLabel),
+        ...subject.taskEntries.map((entry) => entry.badgeLabel ?? ''),
+        ...subject.resourceItems.map((item) => item.title),
+        ...subject.resourceItems.map((item) => item.description),
+        ...subject.resourceItems.map((item) => item.typeLabel),
       ].join(' ').toLowerCase().contains(query);
     }).toList();
 
@@ -3718,7 +4162,7 @@ class _SubjectSearchTile extends StatelessWidget {
               manual.subjectCode.toUpperCase(),
             manual.instructorName ?? 'Manual subject',
           ].join(' - ')
-        : '${classroom!.code} • ${classroom.pendingCount} pending items';
+        : '${classroom!.code} • ${classroom.statusSummary}';
     final icon = manual != null
         ? _iconForKey(manual.iconKey)
         : _iconForKey(classroom!.iconKey);
@@ -4374,28 +4818,34 @@ class _ClassroomSubjectSummary {
   const _ClassroomSubjectSummary({
     required this.key,
     required this.name,
-    required this.entries,
+    required this.taskEntries,
+    required this.resourceItems,
     required this.color,
     required this.iconKey,
   });
 
   final String key;
   final String name;
-  final List<CalendarEntry> entries;
+  final List<CalendarEntry> taskEntries;
+  final List<ClassroomStreamItem> resourceItems;
   final Color color;
   final String iconKey;
 
   String get code => _initialsFor(name);
 
-  int get totalCount => entries.length;
+  int get totalCount => taskEntries.length + resourceItems.length;
 
-  int get pendingCount => entries.where((entry) => !entry.isCompleted).length;
+  int get pendingCount =>
+      taskEntries.where((entry) => !entry.isCompleted).length;
 
-  int get completedCount => entries.where((entry) => entry.isCompleted).length;
+  int get completedCount =>
+      taskEntries.where((entry) => entry.isCompleted).length;
+
+  int get resourceCount => resourceItems.length;
 
   int get overdueCount {
     final now = DateTime.now();
-    return entries.where((entry) {
+    return taskEntries.where((entry) {
       final date = entry.scheduledDate;
       return !entry.isCompleted && date != null && date.isBefore(now);
     }).length;
@@ -4403,13 +4853,29 @@ class _ClassroomSubjectSummary {
 
   DateTime? get nextDeadline {
     final pending =
-        entries
+        taskEntries
             .where((entry) => !entry.isCompleted && entry.scheduledDate != null)
             .map((entry) => entry.scheduledDate!)
             .toList()
           ..sort();
     return pending.isEmpty ? null : pending.first;
   }
+
+  String get statusSummary {
+    if (resourceCount == 0) {
+      return '$pendingCount pending • $completedCount completed';
+    }
+    return '$pendingCount pending • $completedCount completed • $resourceCount resources';
+  }
+}
+
+class _ClassroomSubjectGroup {
+  _ClassroomSubjectGroup({required this.key, required this.name});
+
+  final String key;
+  final String name;
+  final List<CalendarEntry> taskEntries = <CalendarEntry>[];
+  final List<ClassroomStreamItem> resourceItems = <ClassroomStreamItem>[];
 }
 
 class _SubjectDraft {

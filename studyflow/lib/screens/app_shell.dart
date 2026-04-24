@@ -97,8 +97,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         onSearch: _handleSearch,
         onCreateTask: () => _openTaskCreator(PlannerItemType.task, null),
         onCreateExam: () => _openTaskCreator(PlannerItemType.exam, null),
-        onCreateSchedule: () =>
-            _openTaskCreator(PlannerItemType.schedule, null),
+        onCreateSchedule: () => _openScheduleCreator(null),
         onCreateSubject: _openSubjectCreator,
         onSyncData: _runManualSyncAndShowMessage,
       ),
@@ -450,7 +449,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           id: 'calendar',
           title: 'Calendar',
           summary:
-              'Use Calendar to see deadlines by date, inspect schedules, and review Classroom items alongside StudyFlow entries.',
+              'Use Calendar to see deadlines by date, manage smart schedules, and review Classroom items alongside StudyFlow entries.',
           tips: [
             _ScreenGuideTip(
               title: 'Browse by day',
@@ -465,7 +464,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
             _ScreenGuideTip(
               title: 'Add from context',
               body:
-                  'Use the add button to create work directly for the date you are looking at.',
+                  'Use the add button to create work or recurring schedule blocks directly for the date you are looking at.',
             ),
             _ScreenGuideTip(
               title: 'Trust the sync state',
@@ -479,12 +478,12 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           id: 'tasks',
           title: 'Tasks',
           summary:
-              'Tasks is the full planner workspace for assignments, exams, projects, and repeating schedules.',
+              'Tasks is the planner workspace for assignments, exams, projects, and copied Classroom work.',
           tips: [
             _ScreenGuideTip(
               title: 'Filter what matters',
               body:
-                  'Use the filter strip to jump between pending work, past due items, no-due-date items, completed work, exams, and schedules.',
+                  'Use the filter strip to jump between pending work, past due items, no-due-date items, completed work, exams, and high-priority items.',
             ),
             _ScreenGuideTip(
               title: 'Search and sort',
@@ -499,7 +498,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
             _ScreenGuideTip(
               title: 'Create everything here',
               body:
-                  'The add action can create tasks, exams, quizzes, and schedules from one place.',
+                  'The add action can create tasks and exams from one place while Calendar owns recurring schedules.',
             ),
           ],
         );
@@ -576,12 +575,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     }
 
     if (_currentIndex == 1) {
-      return Padding(
-        padding: insetButtonPadding,
-        child: CalendarCreateButton(
-          onTap: () => _calendarKey.currentState?.openCreateMenu(),
-        ),
-      );
+      return null;
     }
 
     if (_currentIndex == 2) {
@@ -606,10 +600,25 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   }
 
   void _openTaskCreator(PlannerItemType type, DateTime? initialDate) {
+    if (type == PlannerItemType.schedule) {
+      _openScheduleCreator(initialDate);
+      return;
+    }
+
     _setCurrentIndex(2, showGuide: false);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _tasksKey.currentState?.openCreateMenu(
         initialType: type,
+        initialDate: initialDate,
+      );
+    });
+  }
+
+  void _openScheduleCreator(DateTime? initialDate) {
+    _setCurrentIndex(1, showGuide: false);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _calendarKey.currentState?.openCreateMenu(
+        initialType: PlannerItemType.schedule,
         initialDate: initialDate,
       );
     });
@@ -748,7 +757,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                 label: 'Smart Schedule',
                 onTap: () {
                   Navigator.of(context).pop();
-                  _openTaskCreator(PlannerItemType.schedule, null);
+                  _openScheduleCreator(null);
                 },
               ),
               _QuickActionSheetTile(
@@ -800,6 +809,14 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           },
           onPlannerSelected: (item) {
             Navigator.of(context).pop();
+            if (item.type == PlannerItemType.schedule) {
+              _setCurrentIndex(1, showGuide: false);
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                _calendarKey.currentState?.openPlannerItemDetails(item);
+              });
+              return;
+            }
+
             _setCurrentIndex(2, showGuide: false);
             WidgetsBinding.instance.addPostFrameCallback((_) {
               _tasksKey.currentState?.openItemDetails(item);

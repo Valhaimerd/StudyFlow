@@ -6,6 +6,42 @@ enum PlannerItemStatus { active, completed, archived }
 
 enum PlannerRepeatPattern { none, daily, weekly, monthly }
 
+class PlannerLinkedClassroomContentRef {
+  const PlannerLinkedClassroomContentRef({
+    required this.id,
+    required this.subjectKey,
+    required this.typeLabel,
+    required this.title,
+    this.alternateLink,
+  });
+
+  final String id;
+  final String subjectKey;
+  final String typeLabel;
+  final String title;
+  final String? alternateLink;
+
+  Map<String, Object?> toJson() {
+    return {
+      'id': id,
+      'subjectKey': subjectKey,
+      'typeLabel': typeLabel,
+      'title': title,
+      'alternateLink': alternateLink,
+    };
+  }
+
+  factory PlannerLinkedClassroomContentRef.fromJson(Map<String, Object?> json) {
+    return PlannerLinkedClassroomContentRef(
+      id: json['id']?.toString() ?? '',
+      subjectKey: json['subjectKey']?.toString() ?? '',
+      typeLabel: json['typeLabel']?.toString().trim() ?? 'Classroom item',
+      title: json['title']?.toString().trim() ?? '',
+      alternateLink: _nullableText(json['alternateLink']),
+    );
+  }
+}
+
 class PlannerSubtask {
   const PlannerSubtask({
     required this.id,
@@ -156,6 +192,7 @@ class PlannerItem {
     this.scheduleSlots = const <PlannerScheduleSlot>[],
     this.autoCompleteFromSubtasks = true,
     this.subtasks = const <PlannerSubtask>[],
+    this.linkedClassroomContent = const <PlannerLinkedClassroomContentRef>[],
     this.completedAt,
     this.createdAt,
     this.updatedAt,
@@ -185,6 +222,7 @@ class PlannerItem {
   final List<PlannerScheduleSlot> scheduleSlots;
   final bool autoCompleteFromSubtasks;
   final List<PlannerSubtask> subtasks;
+  final List<PlannerLinkedClassroomContentRef> linkedClassroomContent;
   final DateTime? completedAt;
   final DateTime? createdAt;
   final DateTime? updatedAt;
@@ -294,6 +332,7 @@ class PlannerItem {
     List<PlannerScheduleSlot>? scheduleSlots,
     bool? autoCompleteFromSubtasks,
     List<PlannerSubtask>? subtasks,
+    List<PlannerLinkedClassroomContentRef>? linkedClassroomContent,
     DateTime? completedAt,
     DateTime? createdAt,
     DateTime? updatedAt,
@@ -344,6 +383,8 @@ class PlannerItem {
       autoCompleteFromSubtasks:
           autoCompleteFromSubtasks ?? this.autoCompleteFromSubtasks,
       subtasks: subtasks ?? this.subtasks,
+      linkedClassroomContent:
+          linkedClassroomContent ?? this.linkedClassroomContent,
       completedAt: clearCompletedAt ? null : completedAt ?? this.completedAt,
       createdAt: clearCreatedAt ? null : createdAt ?? this.createdAt,
       updatedAt: clearUpdatedAt ? null : updatedAt ?? this.updatedAt,
@@ -531,6 +572,9 @@ class PlannerItem {
       'scheduleSlots': scheduleSlots.map((slot) => slot.toJson()).toList(),
       'autoCompleteFromSubtasks': autoCompleteFromSubtasks,
       'subtasks': subtasks.map((subtask) => subtask.toJson()).toList(),
+      'linkedClassroomContent': linkedClassroomContent
+          .map((item) => item.toJson())
+          .toList(),
       'completedAt': completedAt?.toIso8601String(),
       'createdAt': createdAt?.toIso8601String(),
       'updatedAt': updatedAt?.toIso8601String(),
@@ -541,6 +585,7 @@ class PlannerItem {
   factory PlannerItem.fromJson(String id, Map<String, Object?> json) {
     final subtasksJson = json['subtasks'];
     final scheduleSlotsJson = json['scheduleSlots'];
+    final linkedClassroomContentJson = json['linkedClassroomContent'];
     return PlannerItem(
       id: id,
       title: json['title']?.toString().trim() ?? '',
@@ -565,6 +610,9 @@ class PlannerItem {
       scheduleSlots: _parseScheduleSlots(scheduleSlotsJson),
       autoCompleteFromSubtasks: json['autoCompleteFromSubtasks'] != false,
       subtasks: _parseSubtasks(subtasksJson),
+      linkedClassroomContent: _parseLinkedClassroomContent(
+        linkedClassroomContentJson,
+      ),
       completedAt: _parseDateTime(json['completedAt']),
       createdAt: _parseDateTime(json['createdAt']),
       updatedAt: _parseDateTime(json['updatedAt']),
@@ -737,6 +785,24 @@ class PlannerItem {
         }
         return a.startMinutes.compareTo(b.startMinutes);
       });
+  }
+
+  static List<PlannerLinkedClassroomContentRef> _parseLinkedClassroomContent(
+    Object? value,
+  ) {
+    if (value is! List) {
+      return const <PlannerLinkedClassroomContentRef>[];
+    }
+
+    return value
+        .whereType<Map>()
+        .map(
+          (entry) => PlannerLinkedClassroomContentRef.fromJson(
+            entry.map((key, value) => MapEntry(key.toString(), value)),
+          ),
+        )
+        .where((item) => item.id.isNotEmpty && item.title.isNotEmpty)
+        .toList();
   }
 }
 

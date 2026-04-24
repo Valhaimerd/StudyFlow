@@ -6,12 +6,15 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../app_controller.dart';
 import '../models/calendar_entry.dart';
+import '../models/classroom_stream_item.dart';
 import '../models/planner_item.dart';
 import '../models/subject_record.dart';
 import '../services/calendar_repository.dart';
 import '../services/classroom_visibility.dart';
 import '../services/database_service.dart';
 import '../services/notification_service.dart';
+import '../services/planner_item_mutation_service.dart';
+import '../services/classroom_subject_identity.dart';
 import '../theme/study_flow_theme.dart';
 import '../widgets/modal_sheet_header.dart';
 import 'planner_item_editor_sheet.dart';
@@ -25,7 +28,6 @@ enum TasksCollectionFilter {
   completed,
   highPriority,
   exams,
-  schedules,
 }
 
 enum TasksSortOption {
@@ -96,6 +98,35 @@ String _dateTimeLabel(DateTime value, {required bool showTime}) {
     return _fullDate(value);
   }
   return '${_fullDate(value)} at ${_timeLabel(value)}';
+}
+
+String _classroomItemUpdatedLabel(ClassroomStreamItem item) {
+  final value = item.updatedAt ?? item.scheduledAt;
+  if (value == null) {
+    return 'No update time';
+  }
+  return '${_fullDate(value)} at ${_timeLabel(value)}';
+}
+
+Future<void> _openAttachmentUrl(BuildContext context, String? url) async {
+  if (url == null || url.trim().isEmpty) {
+    return;
+  }
+
+  final uri = Uri.tryParse(url);
+  if (uri == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('The attachment link is invalid.')),
+    );
+    return;
+  }
+
+  final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+  if (!launched && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Could not open the attachment.')),
+    );
+  }
 }
 
 String _normalizedSubjectKey(String value) {
@@ -232,6 +263,7 @@ class TasksScreenState extends State<TasksScreen> {
   Timer? _subjectInitialLoadTimer;
   List<PlannerItem> _items = const [];
   List<CalendarEntry> _classroomEntries = const [];
+  List<ClassroomStreamItem> _classroomStreamItems = const [];
   List<SubjectRecord> _subjects = const [];
   Set<String> _hiddenClassroomSubjectKeys = const {};
   Set<String> _hiddenClassroomEntryIds = const {};
@@ -284,11 +316,6 @@ class TasksScreenState extends State<TasksScreen> {
             type: PlannerItemType.exam,
             title: 'Exams & Quizzes',
             subtitle: 'Store quizzes, presentations, and exam schedules.',
-          ),
-          (
-            type: PlannerItemType.schedule,
-            title: 'Smart Schedule',
-            subtitle: 'Create repeating class blocks and study schedules.',
           ),
         ];
 
@@ -401,11 +428,14 @@ class TasksScreenState extends State<TasksScreen> {
   }
 
   List<String> get _classroomSubjectNames {
-    final names = _visibleClassroomEntries
-        .map((entry) => entry.subject.trim())
-        .where((subject) => subject.isNotEmpty)
-        .toSet()
-        .toList();
+    final names = {
+      ..._visibleClassroomEntries
+          .map((entry) => entry.subject.trim())
+          .where((subject) => subject.isNotEmpty),
+      ..._classroomStreamItems
+          .map((item) => item.courseName.trim())
+          .where((subject) => subject.isNotEmpty),
+    }.toList();
     names.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     return names;
   }
@@ -438,8 +468,6 @@ class TasksScreenState extends State<TasksScreen> {
               item.effectivePriority == PlannerItemPriority.high;
         case TasksCollectionFilter.exams:
           return !item.isArchived && item.type == PlannerItemType.exam;
-        case TasksCollectionFilter.schedules:
-          return !item.isArchived && item.type == PlannerItemType.schedule;
       }
     }).toList();
 
@@ -634,14 +662,15 @@ class TasksScreenState extends State<TasksScreen> {
     final examCount = allDisplayItems
         .where((item) => item.type == PlannerItemType.exam && !item.isArchived)
         .length;
-    final scheduleCount = allDisplayItems
+    final highPriorityCount = allDisplayItems
         .where(
-          (item) => item.type == PlannerItemType.schedule && !item.isArchived,
+          (item) =>
+              !item.isCompleted &&
+              !item.isArchived &&
+              item.effectivePriority == PlannerItemPriority.high,
         )
         .length;
-    final remainingLabel = _filter == TasksCollectionFilter.schedules
-        ? 'schedules'
-        : 'items';
+    const remainingLabel = 'items';
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(22, 102, 22, 140),
@@ -654,7 +683,7 @@ class TasksScreenState extends State<TasksScreen> {
         ),
         const SizedBox(height: 8),
         Text(
-          'Manage Exams & Quizzes, editable Classroom tasks, subtasks, and repeating study schedules in one workspace.',
+          'Manage assignments, exams, editable Classroom tasks, and subtasks in one workspace.',
           style: Theme.of(context).textTheme.bodyLarge,
         ),
         const SizedBox(height: 18),
@@ -680,9 +709,9 @@ class TasksScreenState extends State<TasksScreen> {
             const SizedBox(width: 12),
             Expanded(
               child: _MiniStatCard(
-                label: 'Schedules',
-                value: scheduleCount.toString(),
-                accent: const Color(0xFF3BAE90),
+                label: 'High Priority',
+                value: highPriorityCount.toString(),
+                accent: const Color(0xFFE6A546),
               ),
             ),
           ],
@@ -1023,6 +1052,7 @@ class TasksScreenState extends State<TasksScreen> {
 
     setState(() {
       _classroomEntries = snapshot.entries;
+      _classroomStreamItems = snapshot.streamItems;
     });
     unawaited(_reschedulePlannerNotifications());
     _syncClassroomTurnedInItems();
@@ -1035,7 +1065,9 @@ class TasksScreenState extends State<TasksScreen> {
     return PlannerItem(
       id: 'classroom::${entry.id}',
       title: entry.title,
-      subjectId: 'classroom::${entry.subjectKey ?? subjectName}',
+      subjectId: classroomPlannerSubjectId(
+        classroomSubjectStorageKeyForEntry(entry),
+      ),
       subjectName: subjectName,
       sourceItemId: entry.id,
       type: PlannerItemType.task,
@@ -1109,7 +1141,6 @@ class TasksScreenState extends State<TasksScreen> {
 
     Future<String> saveDraft(PlannerItemDraft draft) async {
       final isClassroomDraft = item?.id.startsWith('classroom::') == true;
-      final isOffline = !await DatabaseService.instance.isConnected();
       final record = PlannerItem(
         id: item?.id ?? '',
         title: draft.title,
@@ -1133,38 +1164,23 @@ class TasksScreenState extends State<TasksScreen> {
         scheduleSlots: draft.scheduleSlots,
         autoCompleteFromSubtasks: draft.autoCompleteFromSubtasks,
         subtasks: draft.subtasks,
+        linkedClassroomContent:
+            item?.linkedClassroomContent ??
+            const <PlannerLinkedClassroomContentRef>[],
         completedAt: item?.completedAt,
         createdAt: item?.createdAt,
         updatedAt: item?.updatedAt,
       );
 
-      if (item == null || isClassroomDraft) {
-        final saved = await DatabaseService.instance.createPlannerItem(
-          uid: user.uid,
-          item: record,
-        );
-        await _reschedulePlannerNotifications(
-          overrideItems: _mergePlannerItems(_allDisplayItems, saved),
-        );
-        if (isOffline) {
-          return '${draft.typeLabel} saved locally. It will sync when you are online.';
-        }
-        return isClassroomDraft
-            ? 'Classroom task copied into StudyFlow.'
-            : '${draft.typeLabel} created.';
-      }
-
-      final saved = await DatabaseService.instance.updatePlannerItem(
+      final result = await PlannerItemMutationService.saveRecord(
         uid: user.uid,
-        item: record,
+        record: record,
+        controller: widget.controller,
+        currentItems: _allDisplayItems,
+        previousItem: item,
+        isClassroomDraft: isClassroomDraft,
       );
-      await _reschedulePlannerNotifications(
-        overrideItems: _mergePlannerItems(_allDisplayItems, saved),
-      );
-      if (isOffline) {
-        return '${draft.typeLabel} saved locally. It will sync when you are online.';
-      }
-      return '${draft.typeLabel} updated.';
+      return result.message;
     }
 
     final result = await showModalBottomSheet<String>(
@@ -1212,7 +1228,10 @@ class TasksScreenState extends State<TasksScreen> {
         initialItem: item,
         subject: _subjectsById[item.subjectId],
         classroomLink: _classroomLinkForItem(item),
+        attachableResources: _attachableResourcesForItem(item),
+        resolveLinkedResource: _streamItemForRef,
         onOpenInClassroom: _launchClassroomLink,
+        onOpenClassroomContent: _openClassroomStreamItemDetails,
         onSave: _persistItem,
         onDelete: () async {
           await _deleteItem(item);
@@ -1236,14 +1255,12 @@ class TasksScreenState extends State<TasksScreen> {
     if (uid == null) {
       throw StateError('User not found.');
     }
-    final saved = await DatabaseService.instance.updatePlannerItem(
+    return PlannerItemMutationService.persistItem(
       uid: uid,
       item: item,
+      controller: widget.controller,
+      currentItems: _allDisplayItems,
     );
-    await _reschedulePlannerNotifications(
-      overrideItems: _mergePlannerItems(_allDisplayItems, saved),
-    );
-    return saved;
   }
 
   Future<void> _toggleItemCompletion(PlannerItem item) async {
@@ -1273,9 +1290,11 @@ class TasksScreenState extends State<TasksScreen> {
       return;
     }
 
-    await DatabaseService.instance.deletePlannerItem(uid: uid, itemId: item.id);
-    await _reschedulePlannerNotifications(
-      overrideItems: _allDisplayItems.where((current) => current.id != item.id),
+    await PlannerItemMutationService.deleteItem(
+      uid: uid,
+      item: item,
+      controller: widget.controller,
+      currentItems: _allDisplayItems,
     );
 
     if (!mounted) {
@@ -1303,6 +1322,67 @@ class TasksScreenState extends State<TasksScreen> {
     return null;
   }
 
+  String _plannerItemSubjectStorageKey(PlannerItem item) {
+    final subjectId = item.subjectId.trim();
+    if (subjectId.startsWith('classroom::')) {
+      return subjectId.substring('classroom::'.length);
+    }
+
+    final subject = _subjectsById[item.subjectId];
+    final subjectName =
+        subject?.subjectName.trim() ??
+        item.subjectName?.trim() ??
+        item.subjectCode?.trim() ??
+        '';
+    return normalizedClassroomSubjectNameKey(subjectName);
+  }
+
+  List<ClassroomStreamItem> _attachableResourcesForItem(PlannerItem item) {
+    final plannerKey = _plannerItemSubjectStorageKey(item);
+    if (plannerKey.isEmpty) {
+      return const <ClassroomStreamItem>[];
+    }
+
+    final resources =
+        _classroomStreamItems.where((resource) {
+          if (!resource.isResource) {
+            return false;
+          }
+
+          final subjectKey = classroomSubjectStorageKeyForStreamItem(resource);
+          if (plannerKey == subjectKey) {
+            return true;
+          }
+
+          return plannerKey ==
+              normalizedClassroomSubjectNameKey(resource.courseName);
+        }).toList()..sort((a, b) {
+          final aDate = a.updatedAt ?? a.scheduledAt;
+          final bDate = b.updatedAt ?? b.scheduledAt;
+          if (aDate != null && bDate != null) {
+            final compare = bDate.compareTo(aDate);
+            if (compare != 0) {
+              return compare;
+            }
+          } else if (aDate != null) {
+            return -1;
+          } else if (bDate != null) {
+            return 1;
+          }
+          return a.title.toLowerCase().compareTo(b.title.toLowerCase());
+        });
+    return resources;
+  }
+
+  ClassroomStreamItem? _streamItemForRef(PlannerLinkedClassroomContentRef ref) {
+    for (final item in _classroomStreamItems) {
+      if (item.id == ref.id) {
+        return item;
+      }
+    }
+    return null;
+  }
+
   Future<void> _launchClassroomLink(String? url) async {
     if (url == null || url.trim().isEmpty) {
       _showMessage('This Classroom item does not have an openable link.');
@@ -1319,6 +1399,19 @@ class TasksScreenState extends State<TasksScreen> {
     if (!launched && mounted) {
       _showMessage('Could not open Google Classroom.');
     }
+  }
+
+  Future<void> _openClassroomStreamItemDetails(ClassroomStreamItem item) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).cardColor,
+      showDragHandle: true,
+      builder: (context) => _ClassroomStreamItemDetailsSheet(
+        item: item,
+        onOpenInClassroom: () => _launchClassroomLink(item.alternateLink),
+      ),
+    );
   }
 
   void _showMessage(String message) {
@@ -1338,37 +1431,6 @@ class TasksScreenState extends State<TasksScreen> {
     } catch (error) {
       debugPrint('StudyFlow could not refresh planner notifications: $error');
     }
-  }
-
-  List<PlannerItem> _mergePlannerItems(
-    Iterable<PlannerItem> currentItems,
-    PlannerItem saved,
-  ) {
-    final merged = <PlannerItem>[];
-    var replaced = false;
-
-    for (final item in currentItems) {
-      final isSameRecord = item.id == saved.id;
-      final isCopiedClassroomRecord =
-          saved.sourceItemId != null &&
-          saved.sourceItemId == item.sourceItemId &&
-          item.id.startsWith('classroom::');
-
-      if (isSameRecord || isCopiedClassroomRecord) {
-        if (!replaced) {
-          merged.add(saved);
-          replaced = true;
-        }
-        continue;
-      }
-      merged.add(item);
-    }
-
-    if (!replaced) {
-      merged.add(saved);
-    }
-
-    return merged;
   }
 }
 
@@ -1462,7 +1524,6 @@ class _TaskFilterStrip extends StatelessWidget {
       (filter: TasksCollectionFilter.completed, label: 'Completed'),
       (filter: TasksCollectionFilter.highPriority, label: 'High'),
       (filter: TasksCollectionFilter.exams, label: 'Exams'),
-      (filter: TasksCollectionFilter.schedules, label: 'Schedules'),
     ];
 
     return SingleChildScrollView(
@@ -1826,7 +1887,6 @@ class _EmptyTasksCard extends StatelessWidget {
       TasksCollectionFilter.completed => 'No completed items yet',
       TasksCollectionFilter.highPriority => 'No high-priority items',
       TasksCollectionFilter.exams => 'No Exams & Quizzes yet',
-      TasksCollectionFilter.schedules => 'No smart schedules yet',
     };
 
     final body = switch (filter) {
@@ -1844,8 +1904,6 @@ class _EmptyTasksCard extends StatelessWidget {
         'Nothing urgent is marked as high priority right now.',
       TasksCollectionFilter.exams =>
         'Add quizzes, exams, or presentations so they stay visible across the app.',
-      TasksCollectionFilter.schedules =>
-        'Create a repeating class or review schedule to keep Home and Calendar informed.',
     };
 
     return Container(
@@ -2011,7 +2069,10 @@ class _PlannerItemDetailsSheet extends StatefulWidget {
     required this.initialItem,
     required this.subject,
     required this.classroomLink,
+    required this.attachableResources,
+    required this.resolveLinkedResource,
     required this.onOpenInClassroom,
+    required this.onOpenClassroomContent,
     required this.onSave,
     required this.onDelete,
     required this.onEditRequested,
@@ -2020,7 +2081,11 @@ class _PlannerItemDetailsSheet extends StatefulWidget {
   final PlannerItem initialItem;
   final SubjectRecord? subject;
   final String? classroomLink;
+  final List<ClassroomStreamItem> attachableResources;
+  final ClassroomStreamItem? Function(PlannerLinkedClassroomContentRef ref)
+  resolveLinkedResource;
   final ValueChanged<String?> onOpenInClassroom;
+  final ValueChanged<ClassroomStreamItem> onOpenClassroomContent;
   final Future<PlannerItem> Function(PlannerItem item) onSave;
   final Future<void> Function() onDelete;
   final VoidCallback onEditRequested;
@@ -2034,9 +2099,25 @@ class _PlannerItemDetailsSheetState extends State<_PlannerItemDetailsSheet> {
   late PlannerItem _item = widget.initialItem;
   bool _isSaving = false;
 
+  List<_LinkedClassroomContentView> get _linkedResources {
+    return _item.linkedClassroomContent
+        .map(
+          (ref) => _LinkedClassroomContentView(
+            ref: ref,
+            item: widget.resolveLinkedResource(ref),
+          ),
+        )
+        .toList();
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final linkedResources = _linkedResources;
+    final canAttachClassroomContent =
+        _item.type != PlannerItemType.schedule && !_item.isClassroomBacked;
+    final shouldShowClassroomContentSection =
+        canAttachClassroomContent || linkedResources.isNotEmpty;
 
     return SafeArea(
       child: SingleChildScrollView(
@@ -2193,6 +2274,48 @@ class _PlannerItemDetailsSheetState extends State<_PlannerItemDetailsSheet> {
                   ),
                 ),
               ],
+              if (shouldShowClassroomContentSection) ...[
+                const SizedBox(height: 18),
+                Row(
+                  children: [
+                    Text(
+                      'Materials & Announcements',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: _isSaving || !canAttachClassroomContent
+                          ? null
+                          : _openClassroomAttachmentPicker,
+                      child: Text(
+                        linkedResources.isEmpty ? 'Attach' : 'Manage',
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                if (linkedResources.isEmpty &&
+                    widget.attachableResources.isEmpty)
+                  Text(
+                    'No Classroom materials or announcements are currently available for this subject.',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  )
+                else if (linkedResources.isEmpty)
+                  Text(
+                    'Attach Classroom materials or announcements from the same subject to keep context beside your subtasks.',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  )
+                else
+                  ...linkedResources.map(
+                    (resource) => Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: _AttachedClassroomContentTile(
+                        resource: resource,
+                        onTap: () => _openLinkedClassroomContent(resource),
+                      ),
+                    ),
+                  ),
+              ],
               const SizedBox(height: 24),
               if (_item.isClassroomBacked && widget.classroomLink != null) ...[
                 SizedBox(
@@ -2299,6 +2422,78 @@ class _PlannerItemDetailsSheetState extends State<_PlannerItemDetailsSheet> {
     });
   }
 
+  Future<void> _openClassroomAttachmentPicker() async {
+    final selectedIds = _item.linkedClassroomContent
+        .map((item) => item.id)
+        .toSet();
+    final result = await showModalBottomSheet<Set<String>>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).cardColor,
+      showDragHandle: true,
+      builder: (context) => _ClassroomAttachmentPickerSheet(
+        items: widget.attachableResources,
+        selectedIds: selectedIds,
+      ),
+    );
+
+    if (result == null) {
+      return;
+    }
+
+    setState(() {
+      _isSaving = true;
+    });
+
+    final nextLinkedContent = widget.attachableResources
+        .where((item) => result.contains(item.id))
+        .map(
+          (item) => PlannerLinkedClassroomContentRef(
+            id: item.id,
+            subjectKey: classroomSubjectStorageKeyForStreamItem(item),
+            typeLabel: item.typeLabel,
+            title: item.title,
+            alternateLink: item.alternateLink,
+          ),
+        )
+        .toList();
+
+    final saved = await widget.onSave(
+      _item.copyWith(linkedClassroomContent: nextLinkedContent),
+    );
+
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _item = saved;
+      _isSaving = false;
+    });
+  }
+
+  Future<void> _openLinkedClassroomContent(
+    _LinkedClassroomContentView resource,
+  ) async {
+    final item = resource.item;
+    if (item != null) {
+      widget.onOpenClassroomContent(item);
+      return;
+    }
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).cardColor,
+      showDragHandle: true,
+      builder: (context) => _LinkedClassroomContentFallbackSheet(
+        resource: resource.ref,
+        onOpenInClassroom: resource.ref.alternateLink == null
+            ? null
+            : () => widget.onOpenInClassroom(resource.ref.alternateLink),
+      ),
+    );
+  }
+
   Future<void> _confirmDelete() async {
     final navigator = Navigator.of(context);
     final shouldDelete = await showDialog<bool>(
@@ -2328,6 +2523,319 @@ class _PlannerItemDetailsSheetState extends State<_PlannerItemDetailsSheet> {
     final delete = widget.onDelete;
     navigator.pop();
     await delete();
+  }
+}
+
+class _LinkedClassroomContentView {
+  const _LinkedClassroomContentView({required this.ref, this.item});
+
+  final PlannerLinkedClassroomContentRef ref;
+  final ClassroomStreamItem? item;
+}
+
+class _AttachedClassroomContentTile extends StatelessWidget {
+  const _AttachedClassroomContentTile({required this.resource, this.onTap});
+
+  final _LinkedClassroomContentView resource;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final current = resource.item;
+    final label = current?.typeLabel ?? resource.ref.typeLabel;
+    final title = current?.title ?? resource.ref.title;
+    final description =
+        current?.description ??
+        (resource.ref.alternateLink?.trim().isNotEmpty == true
+            ? resource.ref.alternateLink!
+            : 'Open in Classroom to view this item.');
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(18),
+        child: Ink(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Theme.of(context).brightness == Brightness.dark
+                ? const Color(0xFF182134)
+                : const Color(0xFFF4F6FA),
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE8F2FF),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: const Icon(Icons.linked_camera_rounded),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: StudyFlowTheme.primary,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(title, style: Theme.of(context).textTheme.titleSmall),
+                    const SizedBox(height: 4),
+                    Text(
+                      description,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ],
+                ),
+              ),
+              if (onTap != null) const Icon(Icons.chevron_right_rounded),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ClassroomAttachmentPickerSheet extends StatefulWidget {
+  const _ClassroomAttachmentPickerSheet({
+    required this.items,
+    required this.selectedIds,
+  });
+
+  final List<ClassroomStreamItem> items;
+  final Set<String> selectedIds;
+
+  @override
+  State<_ClassroomAttachmentPickerSheet> createState() =>
+      _ClassroomAttachmentPickerSheetState();
+}
+
+class _ClassroomAttachmentPickerSheetState
+    extends State<_ClassroomAttachmentPickerSheet> {
+  late final Set<String> _selectedIds = {...widget.selectedIds};
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          20,
+          8,
+          20,
+          24 + MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const ModalSheetHeader(
+              title: 'Attach Classroom Content',
+              subtitle:
+                  'Only materials and announcements from the same subject can be attached to this task.',
+            ),
+            const SizedBox(height: 14),
+            if (widget.items.isEmpty)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 16),
+                child: Text(
+                  'No materials or announcements are available for this subject.',
+                ),
+              )
+            else
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: widget.items.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 10),
+                  itemBuilder: (context, index) {
+                    final item = widget.items[index];
+                    final isSelected = _selectedIds.contains(item.id);
+                    final description = item.description.trim().isEmpty
+                        ? 'No additional details.'
+                        : item.description;
+                    return CheckboxListTile(
+                      value: isSelected,
+                      onChanged: (_) {
+                        setState(() {
+                          if (isSelected) {
+                            _selectedIds.remove(item.id);
+                          } else {
+                            _selectedIds.add(item.id);
+                          }
+                        });
+                      },
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                      controlAffinity: ListTileControlAffinity.leading,
+                      title: Text(item.title),
+                      subtitle: Text(
+                        '${item.typeLabel} • ${description.length > 90 ? '${description.substring(0, 87)}...' : description}',
+                      ),
+                    );
+                  },
+                ),
+              ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: () => Navigator.of(context).pop(_selectedIds),
+                child: const Text('Save Attachments'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LinkedClassroomContentFallbackSheet extends StatelessWidget {
+  const _LinkedClassroomContentFallbackSheet({
+    required this.resource,
+    required this.onOpenInClassroom,
+  });
+
+  final PlannerLinkedClassroomContentRef resource;
+  final VoidCallback? onOpenInClassroom;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: SingleChildScrollView(
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(
+            20,
+            8,
+            20,
+            24 + MediaQuery.of(context).viewInsets.bottom,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ModalSheetHeader(
+                title: resource.title,
+                subtitle: resource.typeLabel,
+              ),
+              const SizedBox(height: 12),
+              _DetailInfoRow(label: 'Source', value: 'Classroom attachment'),
+              _DetailInfoRow(label: 'Subject key', value: resource.subjectKey),
+              const SizedBox(height: 14),
+              Text('Details', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 6),
+              Text(
+                'This attachment is still linked to the task, but its full Classroom details are not available in the current local snapshot.',
+                style: Theme.of(context).textTheme.bodyLarge,
+              ),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.tonal(
+                  onPressed: onOpenInClassroom,
+                  child: const Text('Open in Classroom'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ClassroomStreamItemDetailsSheet extends StatelessWidget {
+  const _ClassroomStreamItemDetailsSheet({
+    required this.item,
+    required this.onOpenInClassroom,
+  });
+
+  final ClassroomStreamItem item;
+  final VoidCallback onOpenInClassroom;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: SingleChildScrollView(
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(
+            20,
+            8,
+            20,
+            24 + MediaQuery.of(context).viewInsets.bottom,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ModalSheetHeader(title: item.title, subtitle: item.typeLabel),
+              const SizedBox(height: 12),
+              _DetailInfoRow(label: 'Course', value: item.courseName),
+              _DetailInfoRow(
+                label: 'Updated',
+                value: _classroomItemUpdatedLabel(item),
+              ),
+              if (item.attachments.isNotEmpty)
+                _DetailInfoRow(
+                  label: 'Attachments',
+                  value:
+                      '${item.attachments.length} linked resource${item.attachments.length == 1 ? '' : 's'}',
+                ),
+              const SizedBox(height: 14),
+              Text('Details', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 6),
+              Text(
+                item.description.trim().isEmpty
+                    ? 'No additional details.'
+                    : item.description,
+                style: Theme.of(context).textTheme.bodyLarge,
+              ),
+              if (item.attachments.isNotEmpty) ...[
+                const SizedBox(height: 18),
+                Text(
+                  'Attachments',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 10),
+                ...item.attachments.map(
+                  (attachment) => Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(attachment.title),
+                      subtitle: Text(attachment.typeLabel),
+                      trailing: (attachment.url ?? '').isNotEmpty
+                          ? IconButton(
+                              onPressed: () =>
+                                  _openAttachmentUrl(context, attachment.url),
+                              icon: const Icon(Icons.open_in_new_rounded),
+                            )
+                          : null,
+                    ),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.tonal(
+                  onPressed: onOpenInClassroom,
+                  child: const Text('Open in Classroom'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 

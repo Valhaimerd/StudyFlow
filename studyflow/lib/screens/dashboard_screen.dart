@@ -676,7 +676,7 @@ class _DashboardBody extends StatelessWidget {
           _EmptyCard(
             title: 'No schedule today',
             body:
-                'Smart schedules you create will appear here when they have a meeting today.',
+                'Smart schedules you create in Calendar will appear here when they have a meeting today.',
             actionLabel: 'Create schedule',
             onTap: onCreateSchedule,
           )

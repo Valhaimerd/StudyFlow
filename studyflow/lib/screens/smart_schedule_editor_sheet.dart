@@ -13,6 +13,7 @@ class SmartScheduleEditorSheet extends StatefulWidget {
     super.key,
     required this.controller,
     required this.initialItem,
+    this.initialDate,
     required this.subjects,
     required this.classroomSubjectNames,
     required this.onSave,
@@ -20,6 +21,7 @@ class SmartScheduleEditorSheet extends StatefulWidget {
 
   final AppController controller;
   final PlannerItem? initialItem;
+  final DateTime? initialDate;
   final List<SubjectRecord> subjects;
   final List<String> classroomSubjectNames;
   final Future<String> Function(PlannerItemDraft draft) onSave;
@@ -63,7 +65,7 @@ class _SmartScheduleEditorSheetState extends State<SmartScheduleEditorSheet> {
     _notesController = TextEditingController(text: initial?.notes ?? '');
     _locationController = TextEditingController(text: initial?.location ?? '');
     _selectedCategory = initial?.categoryLabel ?? 'Class Session';
-    _startDate = initial?.scheduledAt ?? DateTime.now();
+    _startDate = initial?.scheduledAt ?? widget.initialDate ?? DateTime.now();
     _repeatUntil = initial?.repeatUntil;
     _reminderEnabled = initial?.reminderEnabled ?? true;
     _reminderLabel =

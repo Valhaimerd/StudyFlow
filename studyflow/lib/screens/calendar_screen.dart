@@ -16,8 +16,11 @@ import '../services/calendar_repository.dart';
 import '../services/classroom_visibility.dart';
 import '../services/database_service.dart';
 import '../services/notification_service.dart';
+import '../services/planner_item_mutation_service.dart';
 import '../theme/study_flow_theme.dart';
 import '../widgets/modal_sheet_header.dart';
+import 'planner_item_editor_sheet.dart' show PlannerItemDraft;
+import 'smart_schedule_editor_sheet.dart';
 
 class _EntryTone {
   const _EntryTone({
@@ -441,6 +444,33 @@ class CalendarScreenState extends State<CalendarScreen> {
         );
   }
 
+  List<SubjectRecord> get _scheduleEditorSubjects {
+    return _manualSubjects.values
+        .where((subject) => !subject.isArchived)
+        .toList()
+      ..sort(
+        (a, b) =>
+            a.subjectCode.toLowerCase().compareTo(b.subjectCode.toLowerCase()),
+      );
+  }
+
+  List<String> get _classroomSubjectNames {
+    final names = _entries
+        .where(
+          (entry) => !isHiddenClassroomEntry(
+            entry,
+            hiddenSubjectKeys: _hiddenClassroomSubjectKeys,
+            hiddenEntryIds: _hiddenClassroomEntryIds,
+          ),
+        )
+        .map((entry) => entry.subject.trim())
+        .where((subject) => subject.isNotEmpty)
+        .toSet()
+        .toList();
+    names.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return names;
+  }
+
   _EntryBadgeStyle _badgeStyleForEntry(CalendarEntry entry, _EntryTone tone) {
     final appearance = _appearanceForEntry(entry);
     if (appearance == null) {
@@ -461,6 +491,58 @@ class CalendarScreenState extends State<CalendarScreen> {
       iconData: _calendarIconForKey(appearance.iconKey),
       backgroundColor: backgroundColor,
       iconColor: _calendarForegroundFor(backgroundColor),
+    );
+  }
+
+  CalendarEntry _manualCalendarEntryForOccurrence(
+    PlannerItem item,
+    DateTime occurrence,
+  ) {
+    final subject = _manualSubjects[item.subjectId];
+    final subjectLabel =
+        subject?.subjectCode ??
+        item.subjectName ??
+        item.subjectCode ??
+        'Subject';
+
+    return CalendarEntry(
+      id: '${item.id}::$occurrence',
+      subject: subjectLabel,
+      title: item.title,
+      description:
+          item.description ??
+          item.location ??
+          item.categoryLabel ??
+          item.typeLabel,
+      type: switch (item.type) {
+        PlannerItemType.exam => CalendarEntryType.exam,
+        PlannerItemType.project => CalendarEntryType.project,
+        PlannerItemType.task => CalendarEntryType.task,
+        PlannerItemType.schedule => CalendarEntryType.lab,
+      },
+      tone: item.isCompleted
+          ? CalendarEntryTone.completed
+          : item.type == PlannerItemType.schedule
+          ? CalendarEntryTone.laboratory
+          : item.type == PlannerItemType.project
+          ? CalendarEntryTone.project
+          : item.type == PlannerItemType.exam
+          ? CalendarEntryTone.critical
+          : item.effectivePriority == PlannerItemPriority.high
+          ? CalendarEntryTone.critical
+          : CalendarEntryTone.openEnded,
+      subjectSource: CalendarSubjectSource.manual,
+      subjectKey: subject?.id ?? item.subjectId,
+      scheduledDate: occurrence,
+      endDate: item.occurrenceEndAt(occurrence),
+      plannerType: item.type,
+      badgeLabel: item.isCompleted
+          ? 'DONE'
+          : item.type == PlannerItemType.schedule
+          ? 'SCHEDULE'
+          : item.priorityLabel.toUpperCase(),
+      isCompleted: item.isCompleted,
+      hasReminder: item.reminderEnabled,
     );
   }
 
@@ -492,11 +574,6 @@ class CalendarScreenState extends State<CalendarScreen> {
       if (subject != null && subject.isArchived) {
         return const <CalendarEntry>[];
       }
-      final subjectLabel =
-          subject?.subjectCode ??
-          item.subjectName ??
-          item.subjectCode ??
-          'Subject';
 
       final occurrences =
           item.repeatPattern == PlannerRepeatPattern.none &&
@@ -506,47 +583,9 @@ class CalendarScreenState extends State<CalendarScreen> {
                 : <DateTime>[item.scheduledAt!]
           : item.occurrencesInRange(rangeStart, rangeEnd);
 
-      return occurrences.map((occurrence) {
-        return CalendarEntry(
-          id: '${item.id}::$occurrence',
-          subject: subjectLabel,
-          title: item.title,
-          description:
-              item.description ??
-              item.location ??
-              item.categoryLabel ??
-              item.typeLabel,
-          type: switch (item.type) {
-            PlannerItemType.exam => CalendarEntryType.exam,
-            PlannerItemType.project => CalendarEntryType.project,
-            PlannerItemType.task => CalendarEntryType.task,
-            PlannerItemType.schedule => CalendarEntryType.lab,
-          },
-          tone: item.isCompleted
-              ? CalendarEntryTone.completed
-              : item.type == PlannerItemType.schedule
-              ? CalendarEntryTone.laboratory
-              : item.type == PlannerItemType.project
-              ? CalendarEntryTone.project
-              : item.type == PlannerItemType.exam
-              ? CalendarEntryTone.critical
-              : item.effectivePriority == PlannerItemPriority.high
-              ? CalendarEntryTone.critical
-              : CalendarEntryTone.openEnded,
-          subjectSource: CalendarSubjectSource.manual,
-          subjectKey: subject?.id ?? item.subjectId,
-          scheduledDate: occurrence,
-          endDate: item.occurrenceEndAt(occurrence),
-          plannerType: item.type,
-          badgeLabel: item.isCompleted
-              ? 'DONE'
-              : item.type == PlannerItemType.schedule
-              ? 'SCHEDULE'
-              : item.priorityLabel.toUpperCase(),
-          isCompleted: item.isCompleted,
-          hasReminder: item.reminderEnabled,
-        );
-      });
+      return occurrences.map(
+        (occurrence) => _manualCalendarEntryForOccurrence(item, occurrence),
+      );
     }).toList();
 
     final visibleClassroomEntries = _entries.where(
@@ -578,63 +617,25 @@ class CalendarScreenState extends State<CalendarScreen> {
         .toList();
   }
 
-  void openCreateMenu() {
-    final formattedDate = _formatLongDate(_selectedDate);
-
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Theme.of(context).cardColor,
-      showDragHandle: true,
-      builder: (context) {
-        final actions = [
-          (
-            title: 'Add Task',
-            subtitle: 'Create coursework or study work tied to this day.',
-            onTap: () => widget.onCreateTask(_selectedDate),
-          ),
-          (
-            title: 'Add Exam/Event',
-            subtitle: 'Schedule a time-bound academic commitment on this date.',
-            onTap: () => widget.onCreateExam(_selectedDate),
-          ),
-          (
-            title: 'Add Subject',
-            subtitle: 'Open subject creation without leaving the calendar.',
-            onTap: widget.onCreateSubject,
-          ),
-        ];
-
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                ModalSheetHeader(
-                  title: 'Create from calendar',
-                  subtitle:
-                      'Use $formattedDate as the prefilled date for a new academic record.',
-                ),
-                const SizedBox(height: 18),
-                ...actions.map(
-                  (action) => ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: Text(action.title),
-                    subtitle: Text(action.subtitle),
-                    trailing: const Icon(Icons.chevron_right_rounded),
-                    onTap: () {
-                      Navigator.of(context).pop();
-                      action.onTap();
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
+  void openCreateMenu({PlannerItemType? initialType, DateTime? initialDate}) {
+    final effectiveDate = initialDate ?? _selectedDate;
+    if (initialType != null) {
+      switch (initialType) {
+        case PlannerItemType.schedule:
+          _openScheduleEditor(initialDate: effectiveDate);
+          return;
+        case PlannerItemType.task:
+          widget.onCreateTask(effectiveDate);
+          return;
+        case PlannerItemType.exam:
+          widget.onCreateExam(effectiveDate);
+          return;
+        case PlannerItemType.project:
+          widget.onCreateTask(effectiveDate);
+          return;
+      }
+    }
+    _openScheduleEditor(initialDate: effectiveDate);
   }
 
   void openSearchSheet() {
@@ -651,6 +652,31 @@ class CalendarScreenState extends State<CalendarScreen> {
           _openEntryDetails(entry);
         },
       ),
+    );
+  }
+
+  void openPlannerItemDetails(PlannerItem item) {
+    if (item.type != PlannerItemType.schedule) {
+      return;
+    }
+
+    final anchorDate = item.scheduledAt;
+    if (anchorDate != null) {
+      setState(() {
+        _selectedDate = DateTime(
+          anchorDate.year,
+          anchorDate.month,
+          anchorDate.day,
+        );
+        _visibleMonth = DateTime(anchorDate.year, anchorDate.month);
+        _refreshDisplayEntries();
+      });
+    }
+
+    final occurrence = anchorDate ?? _selectedDate;
+    _openScheduleDetails(
+      item,
+      occurrenceEntry: _manualCalendarEntryForOccurrence(item, occurrence),
     );
   }
 
@@ -701,6 +727,11 @@ class CalendarScreenState extends State<CalendarScreen> {
             entries: _displayEntries,
             onDateSelected: _selectDate,
           ),
+          const SizedBox(height: 18),
+          _SmartScheduleLaunchCard(
+            selectedDate: _selectedDate,
+            onTap: () => _openScheduleEditor(initialDate: _selectedDate),
+          ),
           const SizedBox(height: 28),
           _SectionHeader(
             title: "Today's Focus",
@@ -747,7 +778,7 @@ class CalendarScreenState extends State<CalendarScreen> {
             const _EmptyAgendaCard(
               title: 'No schedule blocks',
               message:
-                  'Smart schedules created from Tasks will appear here for this day.',
+                  'Smart schedules you create in Calendar will appear here for this day.',
             )
           else
             ...todayScheduleEntries.map((entry) {
@@ -826,7 +857,330 @@ class CalendarScreenState extends State<CalendarScreen> {
     });
   }
 
+  PlannerItem? _plannerItemForEntry(CalendarEntry entry) {
+    if (entry.subjectSource != CalendarSubjectSource.manual) {
+      return null;
+    }
+
+    final separatorIndex = entry.id.lastIndexOf('::');
+    final plannerId = separatorIndex == -1
+        ? entry.id
+        : entry.id.substring(0, separatorIndex);
+    for (final item in _plannerItems) {
+      if (item.id == plannerId) {
+        return item;
+      }
+    }
+    return null;
+  }
+
+  PlannerItem _recordFromDraft(
+    PlannerItemDraft draft, {
+    PlannerItem? sourceItem,
+  }) {
+    return PlannerItem(
+      id: sourceItem?.id ?? '',
+      title: draft.title,
+      subjectId: draft.subjectId,
+      subjectName: draft.subjectName,
+      sourceItemId: sourceItem?.sourceItemId,
+      type: draft.type,
+      priority: draft.priority,
+      description: draft.description,
+      notes: draft.notes,
+      location: draft.location,
+      categoryLabel: draft.categoryLabel,
+      status: draft.status,
+      scheduledAt: draft.scheduledAt,
+      endAt: draft.endAt,
+      hasExplicitTime: draft.hasExplicitTime,
+      reminderEnabled: draft.reminderEnabled,
+      reminderLabel: draft.reminderLabel,
+      repeatPattern: draft.repeatPattern,
+      repeatUntil: draft.repeatUntil,
+      scheduleSlots: draft.scheduleSlots,
+      autoCompleteFromSubtasks: draft.autoCompleteFromSubtasks,
+      subtasks: draft.subtasks,
+      linkedClassroomContent:
+          sourceItem?.linkedClassroomContent ??
+          const <PlannerLinkedClassroomContentRef>[],
+      completedAt: sourceItem?.completedAt,
+      createdAt: sourceItem?.createdAt,
+      updatedAt: sourceItem?.updatedAt,
+    );
+  }
+
+  Future<void> _openScheduleEditor({
+    PlannerItem? item,
+    DateTime? initialDate,
+  }) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+
+    Future<String> saveDraft(PlannerItemDraft draft) async {
+      final record = _recordFromDraft(draft, sourceItem: item);
+      final result = await PlannerItemMutationService.saveRecord(
+        uid: user.uid,
+        record: record,
+        controller: widget.controller,
+        currentItems: _plannerItems,
+        previousItem: item,
+      );
+      return result.message;
+    }
+
+    final result = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      isDismissible: false,
+      enableDrag: false,
+      backgroundColor: Theme.of(context).cardColor,
+      showDragHandle: true,
+      builder: (context) => FractionallySizedBox(
+        heightFactor: 0.94,
+        child: SmartScheduleEditorSheet(
+          controller: widget.controller,
+          initialItem: item,
+          initialDate: initialDate,
+          subjects: _scheduleEditorSubjects,
+          classroomSubjectNames: _classroomSubjectNames,
+          onSave: saveDraft,
+        ),
+      ),
+    );
+
+    if (!mounted || result == null) {
+      return;
+    }
+
+    if (initialDate != null) {
+      setState(() {
+        _selectedDate = DateTime(
+          initialDate.year,
+          initialDate.month,
+          initialDate.day,
+        );
+        _visibleMonth = DateTime(initialDate.year, initialDate.month);
+        _refreshDisplayEntries();
+      });
+    }
+
+    _showMessage(result);
+  }
+
+  Future<void> _deletePlannerItem(PlannerItem item) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      return;
+    }
+
+    await PlannerItemMutationService.deleteItem(
+      uid: uid,
+      item: item,
+      controller: widget.controller,
+      currentItems: _plannerItems,
+    );
+
+    if (!mounted) {
+      return;
+    }
+    _showMessage('${item.title} deleted.');
+  }
+
+  String _repeatSummary(PlannerItem item) {
+    if (item.scheduleSlots.isNotEmpty) {
+      final count = item.scheduleSlots.length;
+      return '$count weekly ${count == 1 ? 'block' : 'blocks'}';
+    }
+    if (item.repeatPattern != PlannerRepeatPattern.none) {
+      return item.repeatLabel;
+    }
+    return 'Does not repeat';
+  }
+
+  Future<void> _confirmDeleteSchedule(PlannerItem item) async {
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Delete schedule?'),
+          content: Text(
+            'Remove "${item.title}" and all of its recurring blocks from your calendar?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldDelete != true) {
+      return;
+    }
+
+    await _deletePlannerItem(item);
+  }
+
+  void _openScheduleDetails(
+    PlannerItem item, {
+    required CalendarEntry occurrenceEntry,
+  }) {
+    final tone = _entryToneFor(
+      occurrenceEntry,
+      Theme.of(context).brightness == Brightness.dark,
+    );
+    final badgeStyle = _badgeStyleForEntry(occurrenceEntry, tone);
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).cardColor,
+      showDragHandle: true,
+      builder: (context) {
+        final now = DateTime.now();
+        final startsAt = occurrenceEntry.scheduledDate;
+        final endsAt = occurrenceEntry.endDate;
+
+        return SafeArea(
+          child: SingleChildScrollView(
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(
+                20,
+                8,
+                20,
+                24 + MediaQuery.of(context).viewInsets.bottom,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  ModalSheetHeader(
+                    title: item.title,
+                    subtitle: '${occurrenceEntry.subject} | Schedule block',
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      _DocumentBadge(
+                        iconData: badgeStyle.iconData,
+                        iconColor: badgeStyle.iconColor,
+                        backgroundColor: badgeStyle.backgroundColor,
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              item.title,
+                              style: Theme.of(context).textTheme.titleLarge,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              '${occurrenceEntry.subject} | ${_repeatSummary(item)}',
+                              style: Theme.of(context).textTheme.bodyMedium,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (occurrenceEntry.description.trim().isNotEmpty) ...[
+                    const SizedBox(height: 18),
+                    Text(
+                      occurrenceEntry.description,
+                      style: Theme.of(context).textTheme.bodyLarge,
+                    ),
+                  ],
+                  const SizedBox(height: 18),
+                  _DetailRow(
+                    label: 'Starts',
+                    value: startsAt == null
+                        ? 'Start time not set'
+                        : _formatDateTime(startsAt),
+                  ),
+                  if (endsAt != null) ...[
+                    const SizedBox(height: 10),
+                    _DetailRow(label: 'Ends', value: _formatDateTime(endsAt)),
+                  ],
+                  const SizedBox(height: 10),
+                  _DetailRow(label: 'Repeats', value: _repeatSummary(item)),
+                  const SizedBox(height: 10),
+                  _DetailRow(
+                    label: 'Status',
+                    value: _scheduleStatus(occurrenceEntry, now),
+                  ),
+                  const SizedBox(height: 10),
+                  _DetailRow(
+                    label: 'Reminder',
+                    value: item.reminderEnabled
+                        ? item.reminderLabel ?? 'Reminder enabled'
+                        : 'Reminder not scheduled',
+                  ),
+                  const SizedBox(height: 18),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: tone.background,
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: tone.border),
+                    ),
+                    child: Text(
+                      'Editing from Calendar updates the full recurring schedule, not just this one block.',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: () {
+                        Navigator.of(context).pop();
+                        _openScheduleEditor(item: item);
+                      },
+                      child: const Text('Edit Schedule'),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton(
+                      onPressed: () {
+                        Navigator.of(context).pop();
+                        _confirmDeleteSchedule(item);
+                      },
+                      child: const Text('Delete Schedule'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   void _openEntryDetails(CalendarEntry entry) {
+    if (entry.isScheduleEntry &&
+        entry.subjectSource == CalendarSubjectSource.manual) {
+      final item = _plannerItemForEntry(entry);
+      if (item != null) {
+        _openScheduleDetails(item, occurrenceEntry: entry);
+        return;
+      }
+    }
+
     final tone = _entryToneFor(
       entry,
       Theme.of(context).brightness == Brightness.dark,
@@ -949,13 +1303,13 @@ class CalendarScreenState extends State<CalendarScreen> {
                         Navigator.of(context).pop();
                         _showMessage(
                           entry.alternateLink == null
-                              ? 'Use the Tasks tab to edit or complete manual planner items.'
+                              ? 'Use the Tasks tab to edit or complete this planner item.'
                               : 'Completion is managed in Google Classroom. Refresh after turning work in there.',
                         );
                       },
                       child: Text(
                         entry.alternateLink == null
-                            ? 'Open Tasks tab'
+                            ? 'Open Task Workspace'
                             : 'Classroom managed',
                       ),
                     ),
@@ -1960,6 +2314,109 @@ class CalendarCreateButton extends StatelessWidget {
               height: 22,
               colorFilter: ColorFilter.mode(iconColor, BlendMode.srcIn),
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SmartScheduleLaunchCard extends StatelessWidget {
+  const _SmartScheduleLaunchCard({
+    required this.selectedDate,
+    required this.onTap,
+  });
+
+  final DateTime selectedDate;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(28),
+        child: Ink(
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: isDark
+                  ? const [Color(0xFF1A2743), Color(0xFF111C34)]
+                  : const [Color(0xFFEAF3FF), Color(0xFFF8FBFF)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(28),
+            border: Border.all(
+              color: isDark ? const Color(0xFF2A3A5A) : const Color(0xFFD8E6FF),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: isDark ? 0.18 : 0.05),
+                blurRadius: 18,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 54,
+                height: 54,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [colorScheme.primary, colorScheme.secondary],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Center(
+                  child: SvgPicture.asset(
+                    'assets/icons/clock.svg',
+                    width: 24,
+                    height: 24,
+                    colorFilter: ColorFilter.mode(
+                      colorScheme.onPrimary,
+                      BlendMode.srcIn,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Smart Schedule',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Create a recurring class or study block starting from ${_formatSectionDate(selectedDate)}.',
+                      style: Theme.of(context).textTheme.bodyLarge,
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: colorScheme.primary.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(
+                  Icons.chevron_right_rounded,
+                  color: colorScheme.primary,
+                ),
+              ),
+            ],
           ),
         ),
       ),

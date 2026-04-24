@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/classroom_activity.dart';
+import '../models/classroom_stream_item.dart';
 import 'auth_service.dart';
 import 'classroom_date_time_parser.dart';
 
@@ -32,6 +33,8 @@ class ClassroomService {
   static const List<String> scopes = [
     'https://www.googleapis.com/auth/classroom.courses.readonly',
     'https://www.googleapis.com/auth/classroom.coursework.me.readonly',
+    'https://www.googleapis.com/auth/classroom.courseworkmaterials.readonly',
+    'https://www.googleapis.com/auth/classroom.announcements.readonly',
     'https://www.googleapis.com/auth/classroom.student-submissions.me.readonly',
   ];
 
@@ -55,6 +58,7 @@ class ClassroomService {
 
     final courses = await _listCourses(headers);
     final activities = <ClassroomActivity>[];
+    final streamItems = <ClassroomStreamItem>[];
 
     for (final course in courses) {
       final courseId = course['id']?.toString();
@@ -64,6 +68,11 @@ class ClassroomService {
 
       final courseName = _nonEmptyText(course['name']) ?? 'Untitled course';
       final courseWorkItems = await _listCourseWork(courseId, headers);
+      final courseWorkMaterials = await _listCourseWorkMaterials(
+        courseId,
+        headers,
+      );
+      final announcements = await _listAnnouncements(courseId, headers);
 
       for (final item in courseWorkItems) {
         final title = _nonEmptyText(item['title']);
@@ -81,6 +90,11 @@ class ClassroomService {
           courseWorkId: workId,
           headers: headers,
         );
+        final isCompleted = _isSubmissionComplete(submissionState);
+        final dueAt = _dateTimeParser.parseDueAt(
+          dueDate: item['dueDate'],
+          dueTime: item['dueTime'],
+        );
 
         activities.add(
           ClassroomActivity(
@@ -91,12 +105,71 @@ class ClassroomService {
             description: _nonEmptyText(item['description']) ?? 'No description',
             workType: item['workType']?.toString() ?? 'ASSIGNMENT',
             state: item['state']?.toString() ?? 'PUBLISHED',
-            isCompleted: _isSubmissionComplete(submissionState),
+            isCompleted: isCompleted,
             alternateLink: _nonEmptyText(item['alternateLink']),
-            dueAt: _dateTimeParser.parseDueAt(
-              dueDate: item['dueDate'],
-              dueTime: item['dueTime'],
-            ),
+            dueAt: dueAt,
+          ),
+        );
+
+        streamItems.add(
+          ClassroomStreamItem(
+            id: '$courseId-$workId',
+            courseId: courseId,
+            courseName: courseName,
+            type: ClassroomStreamItemType.courseWork,
+            title: title,
+            description: _nonEmptyText(item['description']) ?? 'No description',
+            alternateLink: _nonEmptyText(item['alternateLink']),
+            scheduledAt: dueAt,
+            updatedAt:
+                _parseDateTime(item['updateTime']) ??
+                _parseDateTime(item['creationTime']),
+            isCompleted: isCompleted,
+            attachments: _parseMaterialsList(item['materials']),
+          ),
+        );
+      }
+
+      for (final item in courseWorkMaterials) {
+        final title =
+            _nonEmptyText(item['title']) ??
+            _firstAttachmentTitle(item['materials']) ??
+            'Material';
+        streamItems.add(
+          ClassroomStreamItem(
+            id: 'material:$courseId-${item['id']?.toString() ?? title}',
+            courseId: courseId,
+            courseName: courseName,
+            type: ClassroomStreamItemType.material,
+            title: title,
+            description:
+                _nonEmptyText(item['description']) ?? 'No additional details.',
+            alternateLink: _nonEmptyText(item['alternateLink']),
+            scheduledAt: _parseDateTime(item['scheduledTime']),
+            updatedAt:
+                _parseDateTime(item['updateTime']) ??
+                _parseDateTime(item['creationTime']),
+            attachments: _parseMaterialsList(item['materials']),
+          ),
+        );
+      }
+
+      for (final item in announcements) {
+        final text = _nonEmptyText(item['text']) ?? '';
+        streamItems.add(
+          ClassroomStreamItem(
+            id: 'announcement:$courseId-${item['id']?.toString() ?? text.hashCode}',
+            courseId: courseId,
+            courseName: courseName,
+            type: ClassroomStreamItemType.announcement,
+            title: _announcementTitle(text),
+            description: text.isEmpty ? 'No additional details.' : text,
+            alternateLink: _nonEmptyText(item['alternateLink']),
+            scheduledAt: _parseDateTime(item['scheduledTime']),
+            updatedAt:
+                _parseDateTime(item['updateTime']) ??
+                _parseDateTime(item['creationTime']),
+            attachments: _parseMaterialsList(item['materials']),
           ),
         );
       }
@@ -115,8 +188,25 @@ class ClassroomService {
       return a.dueAt!.compareTo(b.dueAt!);
     });
 
+    streamItems.sort((a, b) {
+      final aTimestamp = a.updatedAt ?? a.scheduledAt;
+      final bTimestamp = b.updatedAt ?? b.scheduledAt;
+      if (aTimestamp != null && bTimestamp != null) {
+        final compare = bTimestamp.compareTo(aTimestamp);
+        if (compare != 0) {
+          return compare;
+        }
+      } else if (aTimestamp != null) {
+        return -1;
+      } else if (bTimestamp != null) {
+        return 1;
+      }
+      return a.title.toLowerCase().compareTo(b.title.toLowerCase());
+    });
+
     return ClassroomSnapshot(
       activities: activities,
+      streamItems: streamItems,
       fetchedAt: DateTime.now(),
       courseCount: courses.length,
     );
@@ -142,6 +232,32 @@ class ClassroomService {
       '$_baseUrl/courses/$courseId/courseWork?pageSize=100',
       headers: headers,
       itemsKey: 'courseWork',
+    );
+
+    return items.cast<Map<String, Object?>>();
+  }
+
+  Future<List<Map<String, Object?>>> _listCourseWorkMaterials(
+    String courseId,
+    Map<String, String> headers,
+  ) async {
+    final items = await _fetchPagedItems(
+      '$_baseUrl/courses/$courseId/courseWorkMaterials?pageSize=100',
+      headers: headers,
+      itemsKey: 'courseWorkMaterial',
+    );
+
+    return items.cast<Map<String, Object?>>();
+  }
+
+  Future<List<Map<String, Object?>>> _listAnnouncements(
+    String courseId,
+    Map<String, String> headers,
+  ) async {
+    final items = await _fetchPagedItems(
+      '$_baseUrl/courses/$courseId/announcements?pageSize=100&orderBy=updateTime%20desc',
+      headers: headers,
+      itemsKey: 'announcements',
     );
 
     return items.cast<Map<String, Object?>>();
@@ -251,6 +367,104 @@ class ClassroomService {
     return text;
   }
 
+  DateTime? _parseDateTime(Object? value) {
+    final raw = _nonEmptyText(value);
+    if (raw == null) {
+      return null;
+    }
+    return DateTime.tryParse(raw);
+  }
+
+  String _announcementTitle(String text) {
+    final normalized = text.trim();
+    if (normalized.isEmpty) {
+      return 'Announcement';
+    }
+
+    final firstLine = normalized.split('\n').first.trim();
+    if (firstLine.length <= 80) {
+      return firstLine;
+    }
+    return '${firstLine.substring(0, 77)}...';
+  }
+
+  String? _firstAttachmentTitle(Object? materials) {
+    final attachments = _parseMaterialsList(materials);
+    if (attachments.isEmpty) {
+      return null;
+    }
+    return attachments.first.title;
+  }
+
+  List<ClassroomStreamAttachment> _parseMaterialsList(Object? materials) {
+    if (materials is! List) {
+      return const <ClassroomStreamAttachment>[];
+    }
+
+    final attachments = <ClassroomStreamAttachment>[];
+    for (final item in materials.whereType<Map>()) {
+      final material = item.map(
+        (key, value) => MapEntry(key.toString(), value),
+      );
+      final link = material['link'];
+      if (link is Map) {
+        attachments.add(
+          ClassroomStreamAttachment(
+            typeLabel: 'Link',
+            title: _nonEmptyText(link['title']) ?? 'Link',
+            url: _nonEmptyText(link['url']),
+            thumbnailUrl: _nonEmptyText(link['thumbnailUrl']),
+          ),
+        );
+        continue;
+      }
+
+      final driveWrapper = material['driveFile'];
+      if (driveWrapper is Map) {
+        final driveFile = driveWrapper['driveFile'];
+        if (driveFile is Map) {
+          attachments.add(
+            ClassroomStreamAttachment(
+              typeLabel: 'Drive file',
+              title: _nonEmptyText(driveFile['title']) ?? 'Drive file',
+              url: _nonEmptyText(driveFile['alternateLink']),
+              thumbnailUrl: _nonEmptyText(driveFile['thumbnailUrl']),
+            ),
+          );
+          continue;
+        }
+      }
+
+      final video = material['youtubeVideo'];
+      if (video is Map) {
+        attachments.add(
+          ClassroomStreamAttachment(
+            typeLabel: 'YouTube',
+            title: _nonEmptyText(video['title']) ?? 'YouTube video',
+            url: _nonEmptyText(video['alternateLink']),
+            thumbnailUrl: _nonEmptyText(video['thumbnailUrl']),
+          ),
+        );
+        continue;
+      }
+
+      final form = material['form'];
+      if (form is Map) {
+        attachments.add(
+          ClassroomStreamAttachment(
+            typeLabel: 'Form',
+            title: _nonEmptyText(form['title']) ?? 'Form',
+            url:
+                _nonEmptyText(form['formUrl']) ??
+                _nonEmptyText(form['responseUrl']),
+          ),
+        );
+      }
+    }
+
+    return attachments;
+  }
+
   String _errorMessageFromResponse(
     http.Response response, {
     required String fallback,
@@ -274,7 +488,10 @@ class ClassroomService {
       // Ignore malformed error payloads and fall back to a generic message.
     }
 
-    return _defaultClassroomErrorMessage(response.statusCode, fallback: fallback);
+    return _defaultClassroomErrorMessage(
+      response.statusCode,
+      fallback: fallback,
+    );
   }
 
   String? _sanitizedClassroomErrorMessage(

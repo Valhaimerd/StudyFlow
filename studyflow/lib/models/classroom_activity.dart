@@ -1,3 +1,5 @@
+import 'classroom_stream_item.dart';
+
 class ClassroomActivity {
   const ClassroomActivity({
     required this.id,
@@ -27,11 +29,13 @@ class ClassroomActivity {
 class ClassroomSnapshot {
   const ClassroomSnapshot({
     required this.activities,
+    required this.streamItems,
     required this.fetchedAt,
     required this.courseCount,
   });
 
   final List<ClassroomActivity> activities;
+  final List<ClassroomStreamItem> streamItems;
   final DateTime fetchedAt;
   final int courseCount;
 }

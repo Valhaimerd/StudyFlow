@@ -105,6 +105,7 @@ class CalendarRepository {
         entries: classroomSnapshot.activities
             .map((activity) => _mapper.mapActivity(activity))
             .toList(),
+        streamItems: classroomSnapshot.streamItems,
         courseCount: classroomSnapshot.courseCount,
         lastSyncedAt: classroomSnapshot.fetchedAt,
         source: CalendarSnapshotSource.live,
@@ -140,9 +141,9 @@ class CalendarRepository {
           syncStatus: SyncStatus.stable,
         );
       } catch (_) {
-          return CalendarRefreshResult(
-            snapshot: snapshot,
-            syncStatus: savedLocally
+        return CalendarRefreshResult(
+          snapshot: snapshot,
+          syncStatus: savedLocally
               ? SyncStatus.pendingChanges
               : SyncStatus.failed,
           errorMessage: savedLocally

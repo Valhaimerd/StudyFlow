@@ -87,4 +87,32 @@ void main() {
     expect(item.scheduledAt, scheduledAt);
     expect(item.createdAt, createdAt);
   });
+
+  test('planner items persist linked classroom content refs', () {
+    final item = PlannerItem(
+      id: 'task-5',
+      title: 'Review notes',
+      subjectId: 'subject-1',
+      type: PlannerItemType.task,
+      priority: PlannerItemPriority.medium,
+      linkedClassroomContent: const [
+        PlannerLinkedClassroomContentRef(
+          id: 'announcement:course-1-post-1',
+          subjectKey: 'course-1',
+          typeLabel: 'Announcement',
+          title: 'Lecture moved online',
+          alternateLink: 'https://classroom.google.com/example',
+        ),
+      ],
+    );
+
+    final restored = PlannerItem.fromJson('task-5', item.toJson());
+
+    expect(restored.linkedClassroomContent, hasLength(1));
+    expect(restored.linkedClassroomContent.single.typeLabel, 'Announcement');
+    expect(
+      restored.linkedClassroomContent.single.alternateLink,
+      'https://classroom.google.com/example',
+    );
+  });
 }

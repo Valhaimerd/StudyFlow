@@ -1,14 +1,9 @@
 import '../models/calendar_entry.dart';
 import '../models/planner_item.dart';
+import 'classroom_subject_identity.dart';
 
 String classroomSubjectStorageKey(CalendarEntry entry) {
-  final subjectKey = entry.subjectKey?.trim();
-  if (subjectKey != null && subjectKey.isNotEmpty) {
-    return subjectKey;
-  }
-
-  final subjectName = entry.subject.trim();
-  return subjectName.isEmpty ? 'classroom' : subjectName;
+  return classroomSubjectStorageKeyForEntry(entry);
 }
 
 bool isHiddenClassroomEntry(
@@ -33,14 +28,16 @@ Set<String> hiddenClassroomPlannerSubjectIds(
     }
 
     final subjectName = entry.subject.trim();
-    ids.add('classroom::$storageKey');
+    ids.add(classroomPlannerSubjectId(storageKey));
     if (subjectName.isEmpty) {
-      ids.add('classroom::classroom');
+      ids.add(classroomPlannerSubjectId('classroom'));
       continue;
     }
 
-    ids.add('classroom::$subjectName');
-    ids.add('classroom::${_normalizedClassroomSubjectKey(subjectName)}');
+    ids.add(classroomPlannerSubjectId(subjectName));
+    ids.add(
+      classroomPlannerSubjectId(normalizedClassroomSubjectNameKey(subjectName)),
+    );
   }
 
   return ids;
@@ -65,8 +62,4 @@ bool isPlannerItemHiddenByClassroom(
   }
 
   return false;
-}
-
-String _normalizedClassroomSubjectKey(String value) {
-  return value.trim().toLowerCase().replaceAll(RegExp(r'\s+'), '-');
 }

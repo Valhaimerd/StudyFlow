@@ -9,6 +9,7 @@ import '../models/calendar_entry.dart';
 import '../models/planner_item.dart';
 import 'calendar_repository.dart';
 import 'classroom_visibility.dart';
+import 'classroom_subject_identity.dart';
 import 'database_service.dart';
 
 class NotificationService {
@@ -788,7 +789,9 @@ class NotificationService {
     return PlannerItem(
       id: 'classroom::${entry.id}',
       title: entry.title,
-      subjectId: 'classroom::${entry.subjectKey ?? subjectName}',
+      subjectId: classroomPlannerSubjectId(
+        classroomSubjectStorageKeyForEntry(entry),
+      ),
       subjectName: subjectName,
       sourceItemId: entry.id,
       type: PlannerItemType.task,

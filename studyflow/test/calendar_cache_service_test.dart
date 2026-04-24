@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:studyflow/models/calendar_cache_snapshot.dart';
 import 'package:studyflow/models/calendar_entry.dart';
+import 'package:studyflow/models/classroom_stream_item.dart';
 import 'package:studyflow/services/calendar_cache_service.dart';
 
 void main() {
@@ -29,6 +30,25 @@ void main() {
           hasReminder: true,
         ),
       ],
+      streamItems: [
+        ClassroomStreamItem(
+          id: 'announcement:course-1-post-1',
+          courseId: 'course-1',
+          courseName: 'Mobile Development',
+          type: ClassroomStreamItemType.announcement,
+          title: 'Lecture moved online',
+          description: 'Please check Meet for the new room link.',
+          alternateLink: 'https://classroom.google.com/c/example/m/post',
+          updatedAt: DateTime(2026, 4, 10, 10, 30),
+          attachments: [
+            ClassroomStreamAttachment(
+              typeLabel: 'Link',
+              title: 'Meeting room',
+              url: 'https://meet.google.com/example',
+            ),
+          ],
+        ),
+      ],
       courseCount: 3,
       lastSyncedAt: DateTime(2026, 4, 10, 15, 59),
       source: CalendarSnapshotSource.live,
@@ -43,6 +63,12 @@ void main() {
     expect(restored.entries, hasLength(1));
     expect(restored.entries.first.title, 'Project Checkpoint');
     expect(restored.entries.first.alternateLink, isNotNull);
+    expect(restored.streamItems, hasLength(1));
+    expect(
+      restored.streamItems.first.type,
+      ClassroomStreamItemType.announcement,
+    );
+    expect(restored.streamItems.first.attachments, hasLength(1));
     expect(restored.source, CalendarSnapshotSource.local);
   });
 
